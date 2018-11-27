@@ -5,22 +5,26 @@ import os
 import numpy as np
 from matplotlib import pyplot as plt
 from math import sqrt
+from matplotlib import pyplot as plt
 
 
 MODEL_PATH = 'tf_model'  # 保存的模型文件夹
 MODEL_SAVE_FILE = os.sep.join((MODEL_PATH, 'saved_model.ckpt'))  # 保存的元文件路径
 
-class DisplayConv(object):
 
-    def __init__(self, cnnnet):
-        if not isinstance(cnnnet, cifar10_buildNet2.CNNNetwork):
-            raise ValueError('参数错误!')
-        self.cnn = cnnnet
-        # 输出
-        out_dir = './out_conv'
-        if not os.path.exists(out_dir):
-            os.mkdir(out_dir)
-        self.out_drir = out_dir
+class ModelLoader(object):
+
+    """
+    定义一个加载模型的工具类
+    """
+
+    def __init__(self, model_saved_prefix, **kwargs):
+        """
+        定义一个可视化器
+        :param model_saved_prefix: 输出的保存的模型目录
+        :param kwargs: 其他参数
+        """
+        self.model_saved_prefix = model_saved_prefix
 
     def _factorization(self, n):
         """
@@ -32,6 +36,44 @@ class DisplayConv(object):
                 if i == 1:
                     raise ValueError('n 是质数！')
                 return (i, n // i)
+    @staticmethod
+    def _plotAImage(img):
+        """
+        绘制一张 TF 格式的图片
+        :param image:
+        :return:
+        """
+        I = np.stack((img[:, :, 0], img[:, :, 1], img[:, :, 2]), axis=2)  # 新产生的合并的数据是 第3个维度. 32x32x3
+        plt.title('An image')
+        plt.imshow(I)
+
+    def displayConv(self, **kwargs):
+        """
+        输出各层的卷积核信息
+        :param kwargs:
+        :return:
+        """
+        raise NotImplementedError('displayConv')
+
+    def evaulateOnTest(self, **kwargs):
+        """
+        在测试集合上测试
+        :param kwargs:
+        :return:
+        """
+        raise NotImplementedError('evaulateOnTest')
+
+
+class TensorflowModelLoader(ModelLoader):
+
+    def __init__(self, cnnnet):
+        if not isinstance(cnnnet, cifar10_buildNet2.TensorflowNetwork):
+            raise ValueError('参数错误!')
+        self.cnn = cnnnet
+        super(TensorflowModelLoader, self).__init__(logout_prefix=os.sep.join(('logouts', str(cnnnet))),
+                                                model_saved_prefix=os.sep.join(('models', str(cnnnet))))
+
+
 
     def _input_placeholder(self):
         """
@@ -56,7 +98,7 @@ class DisplayConv(object):
         # 计算准确率
         self.test_accuracy, self.test_equals = self.cnn.accuracy(self.logits, self.one_label_input)
 
-    def display(self, testDataGenerater):
+    def displayConv(self, testDataGenerater):
         # 打开一个新的会话
         with tf.Session() as sess:
             self._input_placeholder()
@@ -104,9 +146,66 @@ class DisplayConv(object):
                 plt.show(block=False)
             plt.pause(500)  # 等待 500 秒, 不让其自动退出
 
+class KerasModelLoader(ModelLoader):
 
-cnnnet_test = cifar10_buildNet2.VGGNetwork(False, num_examples_per_epoch=10000)
-from homework.cnn_cifar.cifar10_loadFile import AugmentImageGenerator
-data = AugmentImageGenerator(True, 1)  # 显示一张图
-testObj = DisplayConv(cnnnet_test)
-testObj.display(data)
+    """
+    Keras 版本的模型加载器
+    """
+
+    def __init__(self, model):
+        if not isinstance(model, cifar10_buildNet2.KerasCNNNetwork):
+            raise ValueError('参数错误!')
+        self.model = model
+        super(KerasModelLoader, self).__init__(model_saved_prefix=os.sep.join(('models', str(model))))
+        # 载入一些测试数据
+        self._init()
+
+    def _init(self):
+        """
+        载入一些测试的数据
+        :return:
+        """
+        from keras.datasets import cifar10
+        from keras.optimizers import Adam
+        import keras
+        _, (x_test, y_test) = cifar10.load_data()  # 仅仅加载测试的数据
+        x_test = x_test.astype('float32') / 255  # 归一化
+        y_test = keras.utils.to_categorical(y_test, self.model.num_classes)  # 处理标签
+        self.X_test = x_test
+        self.y_test = y_test
+        self.X_shape = x_test.shape[1:]
+
+        # 初始化网络结构
+        lr_changer = self.model.learn_rate_changer()
+        self.model.inference(inputs_shape=self.X_shape)
+        # 建立模型
+        self.model.buildModel(loss='categorical_crossentropy',
+                              optimizer=Adam(lr=lr_changer(0)),
+                              metrics=['accuracy'])
+        # 加载模型的权重
+        self.model.loadWeights(os.sep.join([self.model_saved_prefix, 'checkpoints.h5']))
+
+    def displayConv(self, **kwargs):
+        """
+        显示神经网络中的卷积核的输出
+        :param kwargs:
+        :return:
+        """
+        # 选择一张图片
+        image = self.X_test[0]
+        # 显示出来
+        self._plotAImage(img=image)
+        # 输出
+
+
+    def evaulateOnTest(self, **kwargs):
+        """
+        测试准确率
+        :param kwargs:
+        :return:
+        """
+        loss, acc = self.model.evaluate(self.X_test, self.y_test, **kwargs)
+        print('Test Loss:{0:.3f}, Test Accuracy:{1:.3f}'.format(loss, acc))
+
+
+

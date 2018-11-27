@@ -580,8 +580,8 @@ class KerasCNNNetwork(CNNNetwork):
     使用 Keras 做为框架的 CNN 结构
     """
 
-    def __init__(self, steps_per_epoch, **kwargs):
-        self.steps_per_epoch = steps_per_epoch
+    def __init__(self, **kwargs):
+        self._model = None
         super(KerasCNNNetwork, self).__init__(**kwargs)
 
     def print_summary(self):
@@ -590,23 +590,30 @@ class KerasCNNNetwork(CNNNetwork):
     def learn_rate_changer(self):
         raise NotImplementedError('learn_rate_changer')
 
-    def buildModel(self, loss, optimizer, metrics, **kwargs):
+    def loadWeights(self, file):
         """
-        初始化训练模型
-        :param loss: 损失类型
-        :param optimizer: 采用的优化器
-        :param metrics: 度量标准
+        加载权重
+        :param file: 权重文件 *.h5
         :return:
         """
-        raise NotImplementedError('train')
+        self._model.load_weights(file)
+
+    def buildModel(self, loss, optimizer, metrics, **kwargs):
+        self._model.compile(loss=loss, optimizer=optimizer, metrics=metrics, **kwargs)
 
     def fit_generator(self, **kwargs):
+        self._model.fit_generator(**kwargs)
+
+    def evaluate(self, X, y, verbose=1):
         """
-        使用生成的数据训练
-        :param kwargs: 转发的参数
-        :return:
+        测试
+        :param X: 图片输入
+        :param y: 标签
+        :param verbose: Keras 输出是否冗余
+        :return: loss 和 accuracy
         """
-        raise NotImplementedError('fit_generator')
+        scores = self._model.evaluate(X, y, verbose=verbose)
+        return scores[0], scores[1]
 
     def inference(self, inputs_shape, **kwargs):
         raise NotImplementedError('没有实现前向传播网络')
@@ -621,7 +628,6 @@ class KerasResNetwork(KerasCNNNetwork):
         super(KerasResNetwork, self).__init__(steps_per_epoch=steps_per_epoch,conv_strides=1, **kwargs)
         self.depth = 20 # 使用 ResNet20
         self.resNetVersion = 2  # ResNet20 版本 2
-        self._model = None
 
     def _add_resnet_layer(self, inputs, filter_channels=16, kernel_size=3, strides=1, activation='relu', batch_normalization=True, conv_first=True):
         """
@@ -745,11 +751,6 @@ class KerasResNetwork(KerasCNNNetwork):
             return lr
         return changer
 
-    def buildModel(self, loss, optimizer, metrics, **kwargs):
-        self._model.compile(loss=loss, optimizer=optimizer, metrics=metrics, **kwargs)
-
-    def fit_generator(self, **kwargs):
-        self._model.fit_generator(steps_per_epoch=self.steps_per_epoch, **kwargs)
 
     def __str__(self):
         return 'KerasResNetwork%dv%d' % (self.depth, self.resNetVersion)

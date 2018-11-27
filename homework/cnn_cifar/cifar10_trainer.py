@@ -1,5 +1,6 @@
 import tensorflow as tf
 from homework.cnn_cifar import cifar10_buildNet2
+from multiprocessing import cpu_count
 from pprint import pprint
 import os
 import numpy as np
@@ -57,9 +58,6 @@ class TensorflowTrainer(Trainer):
         ], name='train_images_input')
         # 输入的是真实标签
         self.train_labels_input = tf.placeholder(tf.int64, [self.cnn.batch_size], name='train_labels_input')
-        # 验证集部分
-        self.valid_images_input = tf.placeholder(tf.float32, shape=[self.cnn.batch_size, self.cnn.image_width_height, self.cnn.image_width_height, 3], name="valid_images_input")
-        self.valid_labels_input = tf.placeholder(tf.int64, [self.cnn.batch_size], name='valid_labels_input')
 
     def _build_compute_graph(self):
         """
@@ -86,8 +84,10 @@ class TensorflowTrainer(Trainer):
         :param validDataGenerater: 验证数据集的对象
         :return:
         """
+        config = tf.ConfigProto()
+        config.gpu_options.per_process_gpu_memory_fraction = 0.5
         # 打开一个新的会话
-        with tf.Session() as sess:
+        with tf.Session(config=config) as sess:
             self._input_placeholder()
             self._build_compute_graph()
             tf.summary.scalar('train_loss', self.train_loss)
@@ -133,12 +133,13 @@ class TensorflowTrainer(Trainer):
                     # 训练数据
                     _, loss_, lr, merged_value, global_step_ = sess.run([self.train_op, self.train_loss, self.learning_rate, merged, self.global_steps],
                         feed_dict={self.train_images_input: images_batch, self.train_labels_input: labels_batch})
-                    valid_acc = sess.run(self.train_accuracy, feed_dict={self.valid_images_input: images_valid, self.valid_labels_input: labels_valid})
                     # 这个主要区别的是准确率输出的时机
                     if (global_step_ + 1) % self.display_per_global_steps == 0:
                         ## 检查准确率
                         train_acc = sess.run(self.train_accuracy,
                                              feed_dict={self.train_images_input: images_batch, self.train_labels_input: labels_batch})
+                        valid_acc = sess.run(self.train_accuracy, feed_dict={self.train_images_input: images_valid,
+                                                                             self.train_labels_input: labels_valid})
                         pprint(
                             'Epoch:{e:3d}, Global Step:{step:5d}, Train Acc:{tacc:.3f}, Validation Acc:{vacc: .3f}, Learning rate:{lr:.5f}, Loss:{loss:.3f}'.format(
                                 step=global_step_, tacc=train_acc, lr=lr, loss=loss_, e=epoch, vacc=valid_acc))
@@ -169,16 +170,21 @@ class KerasTrainer(Trainer):
         from keras.callbacks import ReduceLROnPlateau
         from keras.datasets import cifar10
         from keras.preprocessing.image import ImageDataGenerator
-
-        # 准备保存的数据点
-        checkpoints = ModelCheckpoint(filepath=os.sep.join([self.model_saved_prefix, 'cifar10_ResNet_checkpoints.h5']),
+        from keras.callbacks import TensorBoard
+        # 处理 Tensorboard 的输出
+        tensorBoardParams = {'log_dir': self.logout_prefix, 'write_graph': True, 'write_images': True}
+        if not self.model.tiny_output_logs:
+            tensorBoardParams.update({'write_grads': True})  # histgram 可能可以设置 具体参看 Keras 的回调 https://keras-cn.readthedocs.io/en/latest/other/callbacks/
+        tensorBoardCallBack = TensorBoard(**tensorBoardParams)
+        # 准备保存的检查点(权重文件)
+        checkpoints = ModelCheckpoint(filepath=os.sep.join([self.model_saved_prefix, 'checkpoints.h5']),
                                       monitor='val_acc',
                                       verbose=1,
-                                      save_best_only=True)
+                                      save_best_only=True)  # 保存最好的验证集误差的权重
         lr_changer = self.model.learn_rate_changer()
         lr_scheduler = LearningRateScheduler(lr_changer)  # 学习率衰减的调用器
         lr_reducer = ReduceLROnPlateau(factor=self.model.learning_rate_decay, cooldown=0, patience=5, min_lr=.5e-6)
-        callbacks = [checkpoints, lr_reducer, lr_scheduler]  # 回调顺序
+        callbacks = [checkpoints, lr_reducer, lr_scheduler, tensorBoardCallBack]  # 回调顺序
         # 定义数据
         (X_train, y_train), (X_test, y_test) = cifar10.load_data()
         # 均1化数据 float -> 0 ~ 255
@@ -250,9 +256,10 @@ class KerasTrainer(Trainer):
         self.model.fit_generator(generator=datagen.flow(X_train, y_train, batch_size=self.model.batch_size),
                                  validation_data=(X_test, y_test),
                                  epochs=self.max_epochs,
-                                 verbose=1,
-                                 workers=4,
-                                 callbacks=callbacks)
+                                 verbose=2,  # 每一个 epoch 显示一次
+                                 workers=cpu_count(),
+                                 callbacks=callbacks,
+                                 steps_per_epoch=X_train.shape[0] // self.model.batch_size)  # https://stackoverflow.com/questions/43457862/whats-the-difference-between-samples-per-epoch-and-steps-per-epoch-in-fit-g
 
 
 
