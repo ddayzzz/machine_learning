@@ -1,0 +1,2 @@
+# 吴恩达老师的慕课
+exams 是课后习题的Python实现（原来的课后习题是使用Matlab或者Octave运行）

@@ -1,0 +1,6 @@
+/cifar10_data/*
+/out/*
+/logouts/*
+/models/*
+/train_backup/*
+/model_back/*
