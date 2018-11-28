@@ -19,7 +19,6 @@ class CNNNetwork(object):
                  keep_prob=0.5,
                  regularizer_ratio=0.002,
                  init_learning_rate=0.001,
-                 moving_average_decay=0.9,
                  num_epoch_per_decay=5,
                  learning_rate_decay=0.1,
                  batch_normalization_epsilon=0.001,
@@ -34,7 +33,6 @@ class CNNNetwork(object):
         :param keep_prob: dropout 的比例
         :param regularizer_ratio: L2 正则化系数
         :param init_learning_rate: 初始的学习率(学习率衰减)
-        :param moving_average_decay: 滑动平均的衰减率
         :param num_epoch_per_decay: 当训练完一批数据的
         :param batch_normalization_epsilon: 对卷积层输出做 batch normalization 的参数 epsilon
         :param learning_rate_decay: 学习率衰减率， num_epoch_per_decay 可以决定衰减的 epoch 间隔
@@ -51,7 +49,6 @@ class CNNNetwork(object):
 
         self.batch_size = batch_size
         self.init_learning_rate = init_learning_rate
-        self.moving_average_decay = moving_average_decay
         self.num_epoch_per_decay = num_epoch_per_decay
         self.learning_rate_decay = learning_rate_decay
         self.tiny_output_logs = tiny_output_logs
@@ -322,12 +319,10 @@ class TensorflowNetwork(CNNNetwork):
         """
         将 logits 的预测损失加入到 tf 的集合中
         :param logits: logit 的输出
-        :param labels: 标签，维度 [batch_size].
+        :param labels: 标签(One-hot)，维度 [batch_size, num_classes].
         :return: 返回交叉熵的 loss 张量集合操作
         """
-        labels = tf.cast(labels, tf.int64)  # 转换成类别的下标
-        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits,
-                                                                name='cross_entropy_per_example')  # 每一个样本的交叉熵
+        cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=labels, logits=logits, name='cross_entropy_per_example')  # 每一个样本的交叉熵
         cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')  # 交叉熵均值
         tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, cross_entropy_mean)  # 交叉熵的损失
         # 总的损失是交叉熵损失加上所有变量的 L2正则化损失
@@ -351,34 +346,37 @@ class TensorflowNetwork(CNNNetwork):
                                                    staircase=True)  # 阶梯状衰减
         # 显示学习率
         tf.summary.scalar('learning_rate', learning_rate)
-        # EMA
-        loss_averages = tf.train.ExponentialMovingAverage(self.moving_average_decay, name='ema_average')
-        # 更新变量。EMA中有影子变量控制模型更新的速度
-        loss_averages_op = loss_averages.apply([total_loss])
-        # 优化损失, 先进行 EMA 的计算
-        with tf.control_dependencies([loss_averages_op]):
-            optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
-            train_op = optimizer.minimize(total_loss, global_step)
+        # 优化
+        optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+        train_op = optimizer.minimize(total_loss, global_step)
         return train_op, learning_rate
 
     def accuracy(self, logits, target_labels):
         """
         计算准确率
         :param logits: 输出各个样本的频率
-        :param target_labels: 标签 [BATCH SIZE]
+        :param target_labels: 标签(one-hot) [BATCH SIZE, num_classes]
         :return: 返回正确率的操作，比较的结果，是布尔张量
         """
-        correct_prediction = tf.equal(tf.argmax(logits, 1), target_labels)  # y 和 y^hat 的误差
+        correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(target_labels, 1))  # y 和 y^hat 的误差
         # 将 bool 向量转化为浮点数矩阵，求和就是准确率
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))  # 求值为 1.0 的数量
         return accuracy, correct_prediction
 
     def getConvList(self):
         """
+        获取所有的卷积层
+        :return: 卷积层列表（按照添加的顺序） 元素为张量
+        """
+        return tf.get_collection('convs')
+
+    def getWeights(self):
+        """
         获取所有的卷积核
         :return: 卷积核列表（按照添加的顺序） 元素为张量
         """
-        return tf.get_collection('convs')
+        x = tf.get_collection('weights')
+        return x
 
 
 class NormalCNNNetwork(TensorflowNetwork):
@@ -429,7 +427,8 @@ class NormalCNNNetwork(TensorflowNetwork):
 
             # self._add_conv_output_image(scope, weights, conv_output=conv, conv_output_size=conv_output_size,
             #                             filter_out_channels=filter_out_channels)
-            tf.add_to_collection('convs', conv)
+            tf.add_to_collection('convs', conv)  # 添加卷积层
+            tf.add_to_collection('weights', weights)  # 添加卷积核
             biases = self._create_or_get_variable(name='biases', shape=[filter_out_channels], initializer=tf.zeros_initializer())  # 偏移
             to_activate = tf.nn.bias_add(conv, biases)  # biases 只能是1-D维度的
             to_activate = self._add_batch_normalization_for_tensor_input(to_activate, channel_dim=filter_out_channels)
@@ -480,11 +479,14 @@ class VGGNetwork(TensorflowNetwork):
         """
         super(VGGNetwork, self).__init__(training=training, num_examples_per_epoch=num_examples_per_epoch,pool_strides=[1,2,2,1], pool_kernel_size=[1,2,2,1], **kwargs)
 
-    def _add_vgg_conv_bn_act_layer(self, input, id_conv, in_filter_channels, out_filter_channels):
+    def _add_vgg_conv_bn_act_layer(self, input, id_conv, in_filter_channels, out_filter_channels, lastConv=False):
         convname = 'conv%d' % id_conv
         with tf.variable_scope(convname) as scope:
             weights = self._create_or_get_variable(name='weights', shape=[3, 3, in_filter_channels, out_filter_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
             conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_strides, padding='SAME', name=convname)
+            if lastConv:
+                # 添加这个 block 的卷积核输出
+                tf.add_to_collection('convs', conv)
             to_activate = self._add_batch_normalization_for_tensor_input(conv, out_filter_channels)
             # 进行 batch_norm
             activated = tf.nn.relu(to_activate)  # 激活
@@ -506,10 +508,7 @@ class VGGNetwork(TensorflowNetwork):
             conv = self._add_vgg_conv_bn_act_layer(input, 1, in_filter_channels, out_filter_channels)
             for i in range(2, num_conv_repeat + 1):
                 # 添加卷积层
-                conv = self._add_vgg_conv_bn_act_layer(conv, i, out_filter_channels, out_filter_channels)
-            # 添加这个 block 的输出
-            tf.add_to_collection('convs', conv)
-
+                conv = self._add_vgg_conv_bn_act_layer(conv, i, out_filter_channels, out_filter_channels, lastConv=i == num_conv_repeat)
             conv = tf.nn.max_pool(conv, ksize=self.pool_kernel_size, strides=self.pool_strides, padding='SAME', name='max_pool')
         return conv
 
@@ -551,11 +550,11 @@ class PretrainedVGG19Network(TensorflowNetwork):
         return logits
 
     def loss(self, logits, target_labels):
-        loss = tf.losses.sparse_softmax_cross_entropy(target_labels, logits=logits)  # 整个预选训练的 Loss 在 GraphKey.Loss 中
+        loss = tf.losses.softmax_cross_entropy(onehot_labels=target_labels, logits=logits)  # 整个预选训练的 Loss 在 GraphKey.Loss 中
         return loss
 
     def accuracy(self, logits, target_labels):
-        correct_prediction = tf.equal(tf.argmax(logits, 1), target_labels)  # y 和 y^hat 的误差
+        correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(target_labels, 1))  # y 和 y^hat 的误差
         # 将 bool 向量转化为浮点数矩阵，求和就是准确率
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))  # 求值为 1.0 的数量
         return accuracy, correct_prediction
@@ -624,8 +623,8 @@ class KerasResNetwork(KerasCNNNetwork):
     使用 Keras 的残差网络(ResNet)实现
     """
 
-    def __init__(self, steps_per_epoch, **kwargs):
-        super(KerasResNetwork, self).__init__(steps_per_epoch=steps_per_epoch,conv_strides=1, **kwargs)
+    def __init__(self, **kwargs):
+        super(KerasResNetwork, self).__init__(conv_strides=1, **kwargs)
         self.depth = 20 # 使用 ResNet20
         self.resNetVersion = 2  # ResNet20 版本 2
 
@@ -692,7 +691,7 @@ class KerasResNetwork(KerasCNNNetwork):
                         activation_func = None
                         using_batch_normalization = False
                 else:
-                    out_filler_channel = num_resnet_block * 2
+                    out_filler_channel = in_filler_channel * 2
                     if resNetBlock == 0:
                         strides = 2
                 # ResNet 残差单元
@@ -711,7 +710,7 @@ class KerasResNetwork(KerasCNNNetwork):
                                                strides=strides,
                                                activation=None,
                                                batch_normalization=False)
-                    X = keras.layers.add([X, out])
+                X = keras.layers.add([X, out])
             in_filler_channel = out_filler_channel
         # 添加分类器
         X = BatchNormalization()(X)

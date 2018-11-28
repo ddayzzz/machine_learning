@@ -11,6 +11,11 @@ import pickle
 import numpy as np
 import os
 
+def rgb2gray(rgb):
+    r, g, b = rgb[:,:,0], rgb[:,:,1], rgb[:,:,2]
+    gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
+    return gray
+
 class CifarData(object):
 
     """
@@ -51,172 +56,149 @@ class CifarData(object):
             X = np.reshape(X, (10000, 3, 32, 32))  # 图像数据, 这不是 tensorflow 的格式
             Y = np.array(Y)
             X = self.reshape_X(X)  # 转换为 tensorflow 格式的数据（我不需要别的处理）
-            # 处理图像
-            # pad_width = ((0, 0), (2, 2), (2, 2), (0, 0))
-            # X = np.pad(X, pad_width=pad_width, mode='constant', constant_values=0)
-            # X = random_crop_and_flip(X, padding_size=2)
-            # X = whitening_image(X)
             self.X = X
             self.Y = Y
 
-class DataGenerator(object):
+class Cifar10DataGenerator(object):
 
-    def generate_augment_batch(self):
-        raise NotImplementedError('generate_augment_batch')
-
-
-class CifarDataGenerator(DataGenerator):
     """
-    这个是 Cifar 数据产生。可以产生任何批次的数据。具体的子类包括训练集、测试集的生成
+    通用的数据产生器
     """
 
-    def __init__(self, testOnly, next_batch_size):
-        super(CifarDataGenerator, self).__init__()
-        self.next_batch_size = next_batch_size
-        if testOnly:
-            self.dataMap = {1: CifarData('./data/test_batch', True)}
-
-        else:
-            # 有测试的数据
-            lists = [CifarData('./data/data_batch_%d' % x, loadImmediately=True) for x in range(1, 6)]
-            # 转换为字典
-            self.dataMap = dict()
-            for i, obj in enumerate(lists):
-                self.dataMap[i + 1] = obj
-        # 初始化定位的内容
-        ## 批次号
-        self.batch_no = 1
-        ## 每一个批次的下一条数据的起始位置
-        self.next_inner_batch_pos = 0
-
-    def next_data(self):
+    def __init__(self, next_batch_size, filenames, path_prefix='./cifar10_data'):
         """
-        返回下一次的图像数据、标签。
-        :return: 数据样本[next_batch_size, 3, 32, 32]， 标签 [next_batch_size]
+        定义 cifar10 的数据产生器
+        :param next_batch_size: 一批的图片样本数量
+        :param filenames: 文件名列表
+        :param path_prefix: 载入的前缀
         """
-        if self.next_inner_batch_pos >= 10000:
-            if self.batch_no >= 5:
-                # 重新循环
-                self.batch_no = 1
-                self.next_inner_batch_pos = 0
-            else:
-                # 加载新的 batch
-                # 释放之前的资源
-                self.batch_no += 1
-                self.next_inner_batch_pos = 0
-        # 已经确保数据可用了
-        upper = self.next_inner_batch_pos + self.next_batch_size
-        X = self.dataMap[self.batch_no].X[self.next_inner_batch_pos: upper,:,:,:]
-        y = self.dataMap[self.batch_no].Y[self.next_inner_batch_pos: upper]
-        # 随机化
-        index = np.arange(self.next_batch_size)
-        np.random.shuffle(index)
-        X = X[index, :, :, :]
-        y = y[index, :]
-        # 递增新的坐标
-        self.next_inner_batch_pos = upper
-        return X, y
-
-class AugmentImageGenerator(object):
-
-    """
-    随机选择一组数据，可以认为是增广的
-    """
-    def __init__(self, testOnly, next_batch_size, path_prefix='./cifar10_data'):
-        super(AugmentImageGenerator, self).__init__()
+        from keras.utils import to_categorical
         # 标题
         with open(os.sep.join((path_prefix, 'batches.meta')), 'rb') as f:
             meta = pickle.load(f, encoding='latin1')
             self.label_names = meta['label_names']  # 标签名称
-        if testOnly:
-            testXY = CifarData('test_batch', loadImmediately=True, path_prefix=path_prefix)
-            X = testXY.X
-            Y = testXY.Y
-        else:
-            lists = [CifarData('data_batch_%d' % x, loadImmediately=True, path_prefix=path_prefix) for x in range(1, 6)]
+        # 数据部分
+        lists = [CifarData(filename, loadImmediately=True, path_prefix=path_prefix) for filename in filenames]  # 数据列表
+        packs = len(lists)
+        X = np.vstack([lists[x].X for x in range(packs)])  # 将每一批次的数据整合为一个数据集 X
+        Y = np.hstack([lists[x].Y for x in range(packs)])  # 注意每个 Y 是一个列向量，要行连接
+        # 数据处理
+        self.X = X / 255.  # 归一
+        self.Y = to_categorical(Y, 10)  # one-hot
+        self.batch_size = next_batch_size
 
-            X = np.vstack([lists[x].X for x in range(5)])  # 将每一批次的数据整合为一个数据集 X
-            Y = np.hstack([lists[x].Y for x in range(5)])  # 注意每个 Y 是一个列向量，要行连接
-
-        self.X = X.astype(np.float32)  # 设置为样本矩阵
-        self.Y = Y  # 设置标签数据
-        self.batch_size = next_batch_size  # 批次的大小
-        self._orders = np.arange(0, X.shape[0])  # 维护一个下标的数组，用于形成随机的坐标
-        # 测试集合的数据都要测试到位
-        self._testStartPos = 0
-        self.testOnly =testOnly
-        self.length_of_X = X.shape[0]
-
-    def generate_augment_batch(self):
+    def num_images(self):
         """
-        生成一个 batch_size 大小的数据集
+        包含图片的大小
         :return:
         """
-        if self.testOnly:
-            if self._testStartPos + self.batch_size >= self.length_of_X:
-                # 余下的几个
-                remain = self.length_of_X - self._testStartPos
-                # 计算起始位置开始读取多少个
-                remain_to_use = self.batch_size - remain
-                # 获取切片的索引
-                res = np.vstack((self.X[self._testStartPos:], self.X[:remain_to_use]))
-                resy = np.hstack((self.Y[self._testStartPos:], self.Y[:remain_to_use]))
-                self._testStartPos = remain_to_use
-            else:
-                res = self.X[self._testStartPos:self._testStartPos + self.batch_size]
-                resy = self.Y[self._testStartPos:self._testStartPos + self.batch_size]
-                self._testStartPos = self._testStartPos + self.batch_size
-            return res, resy
-        else:
-            np.random.shuffle(self._orders)  # 打乱顺序
-            indices = np.random.choice(self._orders, size=self.batch_size, replace=False)  # 不要替换（重复）
-            batch_data = self.X[indices]
-            # 可以做一下其他的图像处理，相见 preprocess， 但是感觉差不多
-            batch_label = self.Y[indices]
-            return batch_data, batch_label
-
-class ResizedAugmentImageGenerator(AugmentImageGenerator):
-
-    def __init__(self, testOnly, next_batch_size, processImageAfterInit, path_prefix='./cifar10_data'):
-        super(ResizedAugmentImageGenerator, self).__init__(testOnly=testOnly, next_batch_size=next_batch_size, path_prefix=path_prefix)
-        self.processed = False
-        if processImageAfterInit:
-            self.X = self._processImage(self.X)
-            self.processed = True
+        return self.X.shape[0]
 
     def generate_augment_batch(self):
-        images, labels = super(ResizedAugmentImageGenerator, self).generate_augment_batch()
-        if not self.processed:
-            images = self._processImage(images)
-        return images, labels
+        """
+        测试数据产生， 所有的数据将按照顺序返回. 有限循环 循环  num_images // batch_size
+        :return:
+        """
+        batchs = self.num_images() // self.batch_size
+        for start_pos in range(0, self.num_images(), self.batch_size):
+            batchs -= 1
+            end = start_pos + self.batch_size
+            yield self.X[start_pos:end], self.Y[start_pos:end,:]
+            if batchs == 0:
+                break
 
-    def _processImage(self, images):
-        # 处理图像
-        from skimage import transform
-        # 注意 X 的格式是 [BACH HEIGHT WIDTH CHANNEL]
-        newImage = []
-        for i in range(images.shape[0]):
-            img = images[i]
-            t = transform.resize(img.astype(np.uint8), (224, 224)) * 255
-            newImage.append(t)
-        # 重新设置
-        return np.array(newImage)
+
+class Cifar10TestDataGenerator(Cifar10DataGenerator):
+
+    """
+    测试数据集合产生
+    """
+    def __init__(self, next_batch_size, path_prefix='./cifar10_data'):
+        super(Cifar10TestDataGenerator, self).__init__(next_batch_size=next_batch_size, path_prefix=path_prefix, filenames=['test_batch'])
+
+
+class Cifar10PreprocessedAugmentDataGenerator(Cifar10DataGenerator):
+
+    def __init__(self, next_batch_size, path_prefix='./cifar10_data'):
+        """
+        使用 Keras 处理的数据, 用于训练集
+        :param next_batch_size: 下一批的数据大小
+        :param path_prefix: 数据前导路径
+        """
+        from keras.preprocessing.image import ImageDataGenerator
+        super(Cifar10PreprocessedAugmentDataGenerator, self).__init__(next_batch_size=next_batch_size,
+                                                                      path_prefix=path_prefix,
+                                                                      filenames=['data_batch_%d' % x for x in range(1, 6)])
+        # 图像增强
+        self.datagen = ImageDataGenerator(
+            # set input mean to 0 over the dataset
+            featurewise_center=True,
+            # set each sample mean to 0
+            samplewise_center=False,
+            # divide inputs by std of dataset
+            featurewise_std_normalization=False,
+            # divide each input by its std
+            samplewise_std_normalization=False,
+            # apply ZCA whitening
+            zca_whitening=False,
+            # epsilon for ZCA whitening
+            zca_epsilon=1e-06,
+            # randomly rotate images in the range (deg 0 to 180)
+            rotation_range=0.2,
+            # randomly shift images horizontally
+            width_shift_range=0.2,
+            # randomly shift images vertically
+            height_shift_range=0.2,
+            # set range for random shear
+            shear_range=0.2,
+            # set range for random zoom
+            zoom_range=0.2,
+            # set range for random channel shifts
+            channel_shift_range=0.2,
+            # set mode for filling points outside the input boundaries
+            fill_mode='nearest',
+            # value used for fill_mode = "constant"
+            cval=0.,
+            # randomly flip images
+            horizontal_flip=True,
+            # randomly flip images
+            vertical_flip=False,
+            # set rescaling factor (applied before any other transformation)
+            rescale=None,
+            # set function that will be applied on each input
+            preprocessing_function=None,
+            # image data format, either "channels_first" or "channels_last"
+            # fraction of images reserved for validation (strictly between 0 and 1)
+            validation_split=0.0)
+
+    def generate_augment_batch(self):
+        """
+        产生一批次的数据（可迭代对象, 有限形式）
+        :return: 图像 [BATCH SIZE, HEIGHT, WIDTH, CHANNEL], 标签（One-hot）。注意循环仅仅执行 数据长度 // BATCH_SIZE
+        """
+        batchs = self.num_images() // self.batch_size
+        for batchX, batchY in self.datagen.flow(self.X, self.Y, batch_size=self.batch_size):
+            batchs -= 1
+            yield batchX, batchY
+            if batchs == 0:
+                break
 
 
 if __name__ == '__main__':
 
     from matplotlib import pyplot as plt
-    aug = AugmentImageGenerator(True, 9999)
-    for k in range(10):
-        X, Y = aug.generate_augment_batch()
+    bc = 5000
+    aug = Cifar10TestDataGenerator(bc)
 
+    for X, Y in aug.generate_augment_batch():
         for i in range(0, 9):
             plt.subplot(330 + 1 + i)
-            img = X[i] / 255.
+            img = X[i]
             I = np.stack((img[:, :, 0], img[:, :, 1], img[:, :, 2]), axis=2)  # 新产生的合并的数据是 第3个维度. 32x32x3
-            plt.title('label=' + aug.label_names[Y[i]])
+            plt.title('label=' + aug.label_names[np.argmax(Y[i])])
             plt.imshow(I)
 
         # show the plot
         plt.show()
+
 

@@ -5,11 +5,10 @@ import os
 import numpy as np
 from matplotlib import pyplot as plt
 from math import sqrt
-from matplotlib import pyplot as plt
 
 
-MODEL_PATH = 'tf_model'  # 保存的模型文件夹
-MODEL_SAVE_FILE = os.sep.join((MODEL_PATH, 'saved_model.ckpt'))  # 保存的元文件路径
+
+
 
 
 class ModelLoader(object):
@@ -55,6 +54,9 @@ class ModelLoader(object):
         """
         raise NotImplementedError('displayConv')
 
+    def displayConvWeights(self, **kwargs):
+        raise NotImplementedError('displayConvWeights')
+
     def evaulateOnTest(self, **kwargs):
         """
         在测试集合上测试
@@ -69,24 +71,32 @@ class TensorflowModelLoader(ModelLoader):
     def __init__(self, cnnnet):
         if not isinstance(cnnnet, cifar10_buildNet2.TensorflowNetwork):
             raise ValueError('参数错误!')
+        self._session = tf.Session()
         self.cnn = cnnnet
-        super(TensorflowModelLoader, self).__init__(logout_prefix=os.sep.join(('logouts', str(cnnnet))),
-                                                model_saved_prefix=os.sep.join(('models', str(cnnnet))))
-
-
+        self._input_placeholder()
+        self._build_compute_graph()  # 这个是必须的操作,用来构建恢复的变量
+        # 新建会话
+        super(TensorflowModelLoader, self).__init__(model_saved_prefix=os.sep.join(('models', str(cnnnet))))
+        # 恢复保存的模型
+        variables_in_train_to_restore = tf.all_variables()
+        ckpt = tf.train.get_checkpoint_state(self.model_saved_prefix)
+        if ckpt and ckpt.model_checkpoint_path:
+            saved_model_file = os.sep.join((self.model_saved_prefix, 'saved_model.ckpt'))
+            check_step = int(ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1])
+            pprint('从 {0} 加载模型，检查点的训练次数{1}'.format(saved_model_file, check_step))
+            saver = tf.train.Saver(variables_in_train_to_restore)
+            saver.restore(self._session, ckpt.model_checkpoint_path)
+        else:
+            pprint('没有找到检查点!')
+            return
 
     def _input_placeholder(self):
         """
         创建输入的张量
         :return:
         """
-        self.one_image_input = tf.placeholder(tf.float32, [
-            1,  # validation test train 的样本数量 batch_size 并不一致
-            32,  # 图像大小
-            32,
-            3  # RGB
-        ], name='one_image_input')
-        self.one_label_input = tf.placeholder(tf.int64, [1], name='one_label_input')
+        self.test_images_input = tf.placeholder(tf.float32, [self.cnn.batch_size,self.cnn.image_width_height, self.cnn.image_width_height,3], name='test_images_input')
+        self.test_labels_input = tf.placeholder(tf.float32, [self.cnn.batch_size, self.cnn.num_classes], name='test_labels_input')
 
     def _build_compute_graph(self):
         """
@@ -94,57 +104,84 @@ class TensorflowModelLoader(ModelLoader):
         :return:
         """
         # logit 输出
-        self.logits = self.cnn.inference(self.one_image_input)
+        self.logits = self.cnn.inference(self.test_images_input)
         # 计算准确率
-        self.test_accuracy, self.test_equals = self.cnn.accuracy(self.logits, self.one_label_input)
+        self.test_accuracy, self.test_equals = self.cnn.accuracy(self.logits, self.test_labels_input)
 
     def displayConv(self, testDataGenerater):
-        # 打开一个新的会话
-        with tf.Session() as sess:
-            self._input_placeholder()
-            self._build_compute_graph()  # 这个是必须的操作,用来构建恢复的变量
-            variables_in_train_to_restore = tf.all_variables()
-            ckpt = tf.train.get_checkpoint_state(MODEL_PATH)
-            if ckpt and ckpt.model_checkpoint_path:
-                check_step = int(ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1])
-                pprint('从 {0} 加载模型，检查点的训练次数{1}'.format(MODEL_SAVE_FILE, check_step))
-                saver = tf.train.Saver(variables_in_train_to_restore)
-                saver.restore(sess, ckpt.model_checkpoint_path)
-            else:
-                pprint('没有找到检查点!')
-                return
-            # 选取数据
-            input_image, input_label = testDataGenerater.generate_augment_batch()  # 获取图片样本
+        # 选取数据
+        for input_image, input_label in testDataGenerater.generate_augment_batch():  # 获取图片样本
             # 输出原图
 
             fig1, ax1 = plt.subplots(nrows=1, ncols=1)
             one_image = input_image[0]  # 减少维度
-            I = np.stack([one_image[:,:,0], one_image[:,:,1], one_image[:,:,2]], axis=2)  # 拼成像素矩阵，元素是RGB分类值
-            ax1.imshow(I / 255.)
-            ax1.set_title('原图')
+            I = np.stack([one_image[:, :, 0], one_image[:, :, 1], one_image[:, :, 2]], axis=2)  # 拼成像素矩阵，元素是RGB分类值
+            ax1.imshow(I)
+            ax1.set_title('Image Input, Label=%s' % (testDataGenerater.label_names[np.argmax(input_label[0])]))
             plt.show(block=False)
-
 
             # 画出原图
             # 获取各个卷积层的信息
-            convs = self.cnn.getConvList()
+            convs = self.cnn.getWeights()
             for index, conv in enumerate(convs):
                 shape = conv.get_shape().as_list()  # 获取卷积层输出的张量维度
-                out_filter_shape = shape[-1] if shape[-1] <= 16 else 16  # 设置最多显示的过滤器的输出的 channel 大小
-                conv_out = sess.run(conv, feed_dict={self.one_image_input: input_image, self.one_label_input: input_label})  # 得到的实际的输出(维度为[BATCH_SIZE HEIGHT WIDTH CHANNEL])
-                conv_transpose = np.transpose(conv_out, [3, 0, 1, 2])  # 转置，tf 的格式是维度在后. 交换轴后 [CHANNEL BATCH HEIGHT WIDTH]
+                out_filter_shape = shape[-1]  # 设置最多显示的过滤器的输出的 channel 大小
+                conv_out = self._session.run(conv, feed_dict={self.test_images_input: input_image,
+                                                              self.test_labels_input: input_label})  # 得到的实际的输出(维度为[BATCH_SIZE HEIGHT WIDTH CHANNEL])
+                conv_transpose = np.transpose(conv_out,
+                                              [3, 0, 1, 2])  # 转置，tf 的格式是维度在后. 交换轴后 [CHANNEL BATCH HEIGHT WIDTH]
                 # 计算每行和每列多少的图像
                 grid_y, grid_x = self._factorization(out_filter_shape)
                 # 添加子图信息
-                fig2, ax2 = plt.subplots(nrows=grid_x, ncols=grid_y, figsize=(out_filter_shape, 1))
-                filter_title_prefix = '{name} {out_channel}x{img_width}x{img_height}'.format(name=conv.name, out_channel=out_filter_shape, img_height=shape[1], img_width=shape[2])
+                fig2, ax2 = plt.subplots(nrows=grid_x, ncols=grid_y, figsize=(shape[1], 1))
+
+                fig2.subplots_adjust(wspace=0.02, hspace=0.02)
+                filter_title_prefix = '{name} {out_channel}x{img_width}x{img_height}'.format(name=conv.name,
+                                                                                             out_channel='[Real:%d, Displayed: %d]' % (
+                                                                                             shape[-1],
+                                                                                             out_filter_shape),
+                                                                                             img_height=shape[1],
+                                                                                             img_width=shape[2])
                 for row in range(grid_x):
                     for col in range(grid_y):
                         ax2[row][col].imshow(conv_transpose[row * grid_y + col][0])  # 获取每个通道输出的图像， 选择的是第一张图片
-                        ax2[row][col].set_title('Channel %d' % (row * grid_y + col))
-                plt.title(filter_title_prefix)
+                        ax2[row][col].set_xticks([])
+                        ax2[row][col].set_yticks([])
+                        # ax2[row][col].set_title('Channel %d' % (row * grid_y + col))
+                fig2.suptitle(filter_title_prefix)
                 plt.show(block=False)
             plt.pause(500)  # 等待 500 秒, 不让其自动退出
+            break
+
+    def evaulateOnTest(self, testDataGenerater, **kwargs):
+        """
+        测试数据集
+        :param testDataGenerater: 测试数据集产生器
+        :param kwargs: 参数
+        :return:
+        """
+        steps_per_batch = testDataGenerater.num_images() // self.cnn.batch_size
+        batch_count = 1
+        accuracies = []
+        for images in range(steps_per_batch):
+            images_test, labels_test = testDataGenerater.generate_augment_batch()
+            accuracy = self._session.run(self.test_accuracy, feed_dict={
+                self.test_images_input: images_test,
+                self.test_labels_input: labels_test
+            })
+            pprint('Batch %d, Test accuracy: %.3f' % (batch_count, accuracy))
+            accuracies.append(accuracy)
+            batch_count += 1
+        accuracies = np.array(accuracies)
+        print('Test accuracy: \nMean: {0:.3f}\nMax: {1:.3f}\nMin: {2:.3f}'.format(np.mean(accuracies), np.max(accuracies), np.min(accuracies)))
+
+    def __del__(self):
+        """
+        析构函数
+        :return:
+        """
+        print('Close tf Session')
+        self._session.close()
 
 class KerasModelLoader(ModelLoader):
 

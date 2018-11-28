@@ -37,12 +37,16 @@ class Trainer(object):
 
 class TensorflowTrainer(Trainer):
 
-    def __init__(self, cnnnet, max_epoch, display_per_global_steps=100):
+    def __init__(self, cnnnet, max_epoch, ):
+        """
+        TF 训练器
+        :param cnnnet: TF 神经网络
+        :param max_epoch: 最大 epoch
+        """
         if not isinstance(cnnnet, cifar10_buildNet2.TensorflowNetwork):
             raise ValueError('请使用 TensorflowNetwork 子类作为 CNN 的参数')
         self.cnn = cnnnet
         self.max_epoch = max_epoch
-        self.display_per_global_steps = display_per_global_steps
         super(TensorflowTrainer, self).__init__(logout_prefix=os.sep.join(('logouts', str(cnnnet))), model_saved_prefix=os.sep.join(('models', str(cnnnet))))
 
     def _input_placeholder(self):
@@ -57,7 +61,7 @@ class TensorflowTrainer(Trainer):
             3  # RGB
         ], name='train_images_input')
         # 输入的是真实标签
-        self.train_labels_input = tf.placeholder(tf.int64, [self.cnn.batch_size], name='train_labels_input')
+        self.train_labels_input = tf.placeholder(tf.float32, [self.cnn.batch_size, self.cnn.num_classes], name='train_labels_input')
 
     def _build_compute_graph(self):
         """
@@ -77,6 +81,11 @@ class TensorflowTrainer(Trainer):
         self.learning_rate = lr
         self.logits = logits
 
+    def _check_acc_on_valid(self, imgs, labels, sess):
+        valid_acc = sess.run(self.train_accuracy, feed_dict={self.train_images_input: imgs,
+                                                             self.train_labels_input: labels})
+        return valid_acc
+
     def train(self, trainDataGenerater, validDataGenerater, **kwargs):
         """
         训练神经网络
@@ -84,10 +93,10 @@ class TensorflowTrainer(Trainer):
         :param validDataGenerater: 验证数据集的对象
         :return:
         """
-        config = tf.ConfigProto()
-        config.gpu_options.per_process_gpu_memory_fraction = 0.5
+        # config = tf.ConfigProto()
+        # config.gpu_options.per_process_gpu_memory_fraction = 0.7 config=config
         # 打开一个新的会话
-        with tf.Session(config=config) as sess:
+        with tf.Session() as sess:
             self._input_placeholder()
             self._build_compute_graph()
             tf.summary.scalar('train_loss', self.train_loss)
@@ -123,30 +132,36 @@ class TensorflowTrainer(Trainer):
             train_writer = tf.summary.FileWriter(os.sep.join((self.logout_prefix, 'train')), sess.graph)
             # 计算一次 epoch 走过的 step 次数
             batches_per_epoch = self.cnn.num_examples_per_epoch // self.cnn.batch_size  # 每进行一次 epoch 训练， 内循环迭代的次数. 也就是batch 的数量
-            # 验证数据
-            images_valid, labels_valid = validDataGenerater.generate_augment_batch()
+            # 把验证集上最后的平均结果进行计算
+            max_acc = -1.0
             for epoch in range(startstep // batches_per_epoch, self.max_epoch):
-                # 训练一次
-                for batch_counter in range(batches_per_epoch):
-                    # 获取训练的数据
-                    images_batch, labels_batch = trainDataGenerater.generate_augment_batch()
+                # 跑一次 epoch
+                for images_batch, labels_batch in trainDataGenerater.generate_augment_batch():
                     # 训练数据
-                    _, loss_, lr, merged_value, global_step_ = sess.run([self.train_op, self.train_loss, self.learning_rate, merged, self.global_steps],
+                    _, loss_, lr, merged_value, global_step_, train_acc = sess.run(
+                        [self.train_op, self.train_loss, self.learning_rate, merged, self.global_steps, self.train_accuracy],
                         feed_dict={self.train_images_input: images_batch, self.train_labels_input: labels_batch})
-                    # 这个主要区别的是准确率输出的时机
-                    if (global_step_ + 1) % self.display_per_global_steps == 0:
-                        ## 检查准确率
-                        train_acc = sess.run(self.train_accuracy,
-                                             feed_dict={self.train_images_input: images_batch, self.train_labels_input: labels_batch})
-                        valid_acc = sess.run(self.train_accuracy, feed_dict={self.train_images_input: images_valid,
-                                                                             self.train_labels_input: labels_valid})
-                        pprint(
-                            'Epoch:{e:3d}, Global Step:{step:5d}, Train Acc:{tacc:.3f}, Validation Acc:{vacc: .3f}, Learning rate:{lr:.5f}, Loss:{loss:.3f}'.format(
-                                step=global_step_, tacc=train_acc, lr=lr, loss=loss_, e=epoch, vacc=valid_acc))
-                        # 保存模型
-                        saver.save(sess, model_saved_file, global_step=self.global_steps)
+                    # 每100 个 step 输出一次
+                    if (global_step_ + 1) % 100 ==0:
+                        print('Epoch %d, Global step: %10d, Train accuracy: %.3f, Loss: %.3f, Learning rate: %.7f' % (epoch, global_step_, train_acc, loss_, lr))
+                    train_writer.add_summary(merged_value, global_step=global_step_)  # 每一个 step 记录一次
+                # 验证集的平均正确率
+                valid_accs = []
+                for valid_images_batch, valid_labels_batch in validDataGenerater.generate_augment_batch():
+                    va = self._check_acc_on_valid(valid_images_batch, valid_labels_batch, sess)
+                    valid_accs.append(va)
+                # 平均的验证集准确率
+                mean_valid_acc = np.mean(np.array(valid_accs))
+                if mean_valid_acc > max_acc:
+                    print('Epoch {2}, Validation average accuracy changed from {0:.3f} to {1:.3f}, save model.'.format(max_acc, mean_valid_acc, epoch))
+                    max_acc = mean_valid_acc
+                    # 保存模型
+                    saver.save(sess, model_saved_file, global_step=self.global_steps)
+                else:
+                    print('Epoch {0}, Validation average accuracy {1:.3f} not improve from {2:.3f}, save model.'.format(
+                        epoch, mean_valid_acc, max_acc))
+                # 继续下一次训练
 
-                    train_writer.add_summary(merged_value, global_step=global_step_)
             train_writer.close()
 
 class KerasTrainer(Trainer):
