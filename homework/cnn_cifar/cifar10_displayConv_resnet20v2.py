@@ -8,4 +8,4 @@ cnnnet = KerasResNetwork(batch_size=32,
                          regularizer_ratio=1e-4,
                          learning_rate_decay=sqrt(0.1))
 trainObj = KerasModelLoader(cnnnet)
-trainObj.evaulateOnTest(verbose=1)
+trainObj.displayConvWeights()

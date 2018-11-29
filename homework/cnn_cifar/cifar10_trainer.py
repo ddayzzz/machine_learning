@@ -153,12 +153,12 @@ class TensorflowTrainer(Trainer):
                 # 平均的验证集准确率
                 mean_valid_acc = np.mean(np.array(valid_accs))
                 if mean_valid_acc > max_acc:
-                    print('Epoch {2}, Validation average accuracy changed from {0:.3f} to {1:.3f}, save model.'.format(max_acc, mean_valid_acc, epoch))
+                    print('Epoch {2}, Validation average accuracy changed from {0:.7f} to {1:.7f}, save model.'.format(max_acc, mean_valid_acc, epoch))
                     max_acc = mean_valid_acc
                     # 保存模型
                     saver.save(sess, model_saved_file, global_step=self.global_steps)
                 else:
-                    print('Epoch {0}, Validation average accuracy {1:.3f} not improve from {2:.3f}, save model.'.format(
+                    print('Epoch {0}, Validation average accuracy {1:.7f} not improve from {2:.7f}.'.format(
                         epoch, mean_valid_acc, max_acc))
                 # 继续下一次训练
 

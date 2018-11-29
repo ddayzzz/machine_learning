@@ -60,15 +60,17 @@ class CNNNetwork(object):
 
 class TensorflowNetwork(CNNNetwork):
 
-    def __init__(self, training, num_examples_per_epoch, **kwargs):
+    def __init__(self, training, num_examples_per_epoch, displayKernelOnTensorboard=False, **kwargs):
         """
         定义基于 Tensorflow 的神经网络结构
         :param training: 是否是训练状态
         :param num_examples_per_epoch: epoch 包含的样本数量（cifar10一般的训练集就是50000）
+        :param displayKernelOnTensorboard: 是否显示卷积核中的过滤器的输出
         :param kwargs: 参数
         """
         self.training = training
         self.num_examples_per_epoch = num_examples_per_epoch
+        self.displayKernelOnTensorboard = displayKernelOnTensorboard
         super(TensorflowNetwork, self).__init__(**kwargs)
 
     def inference(self, images, **kwargs):
@@ -87,7 +89,7 @@ class TensorflowNetwork(CNNNetwork):
 
     def put_kernels_on_grid(self, kernel, grid_Y, grid_X, pad=1):
         """
-        参考：
+        参考：https://gist.github.com/kukuruza/03731dc494603ceab0c5
         将 kernel 输出为一张图片中，主要进行 filter 各个channel的排列
         :param kernel: 卷积核 4-D 张量 [Y, X, NumChannels, NumKernels]
         :param grid_Y: 输出小卷积核的长 满足 NumKernels == grid_Y * grid_X
@@ -125,12 +127,13 @@ class TensorflowNetwork(CNNNetwork):
         #
         # # summary 图像格式 [batch_size, height, width, channels],
         # #  只有一个图像：输出的是 batch_size
-        # x7 = tf.transpose(x6, (3, 0, 1, 2))
+        # x7 = tf.transpose(x6, (3, 0, 1, 2))  # CHWN
+        x7 = tf.transpose(x6, (2, 0, 1, 3))  # CHWN
         #
         # # scale to [0, 255] and convert to uint8
-        return x6
+        return tf.image.convert_image_dtype(x7, dtype=tf.uint8)
 
-    def _add_conv_output_image(self, scope, kernel, conv_output, conv_output_size, filter_out_channels):
+    def _add_conv_output_image(self, scope, kernel):
         """
         https://gist.github.com/panmari/4622b78ce21e44e2d69c
         添加 卷积核的输出
@@ -151,34 +154,6 @@ class TensorflowNetwork(CNNNetwork):
         grid_y, grid_x = factorization(out_channel)
         grid = self.put_kernels_on_grid(kernel=kernel, grid_X=grid_x, grid_Y=grid_y)
         tf.summary.image(scope.name + '/filter', grid, max_outputs=out_channel)
-
-        # images
-        # out_channels = filter_out_channels
-        # layer_image1 = tf.transpose(conv_output, perm=[3,0,1,2])
-        # tf.summary.image(scope.name + "/filtered_images", layer_image1, max_outputs=out_channel)
-        ## Prepare for visualization
-        # # Take only convolutions of first image, discard convolutions for other images.
-        # V = tf.slice(conv_output, (0, 0, 0, 0), (1, -1, -1, -1), name='slice_first_input')
-        # V = tf.reshape(V, (conv_output_size, conv_output_size, filter_out_channels))
-        #
-        # # Reorder so the channels are in the first dimension, x and y follow.
-        # V = tf.transpose(V, (2, 0, 1))
-        # # Bring into shape expected by image_summary
-        # V = tf.reshape(V, (-1, conv_output_size, conv_output_size, 1))
-        # tf.summary.image(tensor=V, max_outputs=1, name=scope.name +'/img_out')
-        # 把 kernel 放缩到 [0,1] 的浮点
-        # x_min = tf.reduce_min(kernel)
-        # x_max = tf.reduce_max(kernel)
-        # kernel_0_to_1 = (kernel - x_min) / (x_max - x_min)
-        # # 转换 kernel 到 tf 的输入样本格式 [batch_size, height, width, channels]
-        # kernel_transposed = tf.transpose(kernel_0_to_1, [3, 0, 1, 2])
-        # # 显示随机的从 卷积层输出的三个过滤器
-        # # tf.summary.image(scope.name + '/filter', kernel_transposed, max_outputs=3)
-        # # 随机选取 16 张输出处理后的图片显示
-        # layer_image1 = conv_output[0:1, :, :, 0:16]
-        # layer_image1 = tf.transpose(layer_image1, perm=[3, 1, 2, 0])
-        # tf.summary.image(scope.name + '/filted_image', layer_image1, max_outputs=16)
-        # tf.summary.image(scope.name + '/conv_output', conv_output, max_outputs=3)
 
     def _create_or_get_variable(self, name, shape, initializer=tf.contrib.layers.xavier_initializer()):
         """
@@ -483,11 +458,14 @@ class VGGNetwork(TensorflowNetwork):
         convname = 'conv%d' % id_conv
         with tf.variable_scope(convname) as scope:
             weights = self._create_or_get_variable(name='weights', shape=[3, 3, in_filter_channels, out_filter_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
+
             conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_strides, padding='SAME', name=convname)
             if lastConv:
                 # 添加这个 block 的卷积核输出
                 tf.add_to_collection('convs', conv)  # 添加卷积层
                 tf.add_to_collection('weights', weights)  # 添加卷积核
+                if self.displayKernelOnTensorboard:
+                    self._add_conv_output_image(scope=scope, kernel=weights)
             to_activate = self._add_batch_normalization_for_tensor_input(conv, out_filter_channels)
             # 进行 batch_norm
             activated = tf.nn.relu(to_activate)  # 激活

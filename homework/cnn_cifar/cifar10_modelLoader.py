@@ -17,13 +17,15 @@ class ModelLoader(object):
     定义一个加载模型的工具类
     """
 
-    def __init__(self, model_saved_prefix, **kwargs):
+    def __init__(self, logout_prefix, model_saved_prefix, **kwargs):
         """
         定义一个可视化器
         :param model_saved_prefix: 输出的保存的模型目录
+        :param logout_prefix: 输出的日志文件目录
         :param kwargs: 其他参数
         """
         self.model_saved_prefix = model_saved_prefix
+        self.logout_prefix = logout_prefix
 
     def _factorization(self, n):
         """
@@ -81,7 +83,7 @@ class TensorflowModelLoader(ModelLoader):
         self._input_placeholder()
         self._build_compute_graph()  # 这个是必须的操作,用来构建恢复的变量
         # 新建会话
-        super(TensorflowModelLoader, self).__init__(model_saved_prefix=os.sep.join(('models', str(cnnnet))))
+        super(TensorflowModelLoader, self).__init__(logout_prefix=os.sep.join(('logouts', str(cnnnet))), model_saved_prefix=os.sep.join(('models', str(cnnnet))))
         # 恢复保存的模型
         variables_in_train_to_restore = tf.all_variables()
         ckpt = tf.train.get_checkpoint_state(self.model_saved_prefix)
@@ -163,80 +165,30 @@ class TensorflowModelLoader(ModelLoader):
             plt.pause(500)  # 等待 500 秒, 不让其自动退出
             break
 
-    @staticmethod
-    def _deprocess_image(x):
-        x -= x.mean()
-        x /= (x.std() - 1e-5)
-        x *= 0.1
-        x += 0.5
-        x = np.clip(x, 0, 1)
-        x *= 255
-        x = np.clip(x, 0, 255).astype(np.uint8)
-        return x
-
-    def _compute_gradient_ascending(self, images_input, images_input_data, filter_out, filter_index, size=32):
-        import numpy as np
-        from keras import backend as K
-        filter_out = tf.convert_to_tensor(filter_out)
-        loss = tf.reduce_mean(filter_out[:, :, :, filter_index])
-        grads = tf.gradients(loss, images_input)[0]
-        grads /= (K.sqrt(K.mean(K.sqrt(grads))) + 1e-5)
-        iterate = K.function([images_input], [loss,grads])
-        # 图像
-        images_input_data = (np.random.random((1, size, size, 3)) - 0.5) * 20 + 128
-        step = 1
-        for i in range(40):
-            loss_value, grads_value = iterate([images_input_data])
-            images_input_data += grads_value * step
-        img = images_input_data[0]
-        return self._deprocess_image(img)
-
     def displayConvWeights(self, testDataGenerater):
         """
         可视化卷积核
         :param testDataGenerater:
         :return:
         """
+        weights_writer = tf.summary.FileWriter(os.sep.join((self.logout_prefix, 'filters_out')), self._session.graph)
+        merged = tf.summary.merge_all()
+        print(merged)
         # 选取数据
         for input_image, input_label in testDataGenerater.generate_augment_batch():  # 获取图片样本
             # 输出原图
-            fig1, ax1 = plt.subplots(nrows=1, ncols=1)
-            one_image = input_image[0]  # 减少维度
-            I = np.stack([one_image[:, :, 0], one_image[:, :, 1], one_image[:, :, 2]], axis=2)  # 拼成像素矩阵，元素是RGB分类值
-            ax1.imshow(I)
-            ax1.set_title('Image Input, Label=%s' % (testDataGenerater.label_names[np.argmax(input_label[0])]))
-            plt.show(block=False)
-
-            # 画出原图
-            # 获取各个卷积核的信息
-            filters = self.cnn.getWeights()
-            for index, filter in enumerate(filters):
-
-                # shape = filter.get_shape().as_list()  # 获取卷积层输出的张量维度 [ksize, ksize, in_channel, out_channel]
-                # out_filter_shape = shape[-1] if shape[-1] <= 16 else 16  # 设置最多显示的过滤器的输出的 channel 大小
-                # filter_out = self._session.run(filter, feed_dict={self.test_images_input: input_image, self.test_labels_input: input_label})  # 得到的实际的输出(维度为[BATCH_SIZE HEIGHT WIDTH CHANNEL])
-                print(filter)
-                plt.imshow(self._compute_gradient_ascending(self.test_images_input, input_image, filter, 0))
-                plt.show()
-                break
-                # filter_transpose = np.transpose(filter_out, [3, 0, 1, 2])  # 转置, [out_channel, ksize, ksize, in_channel]
-                # # 计算每行和每列多少的图像
-                # grid_y, grid_x = self._factorization(out_filter_shape)
-                # # 添加子图信息
-                # fig2, ax2 = plt.subplots(nrows=grid_x, ncols=grid_y, figsize=(shape[1], 1))
-                #
-                # # fig2.subplots_adjust(wspace=0.02, hspace=0.02)
-                # filter_title_prefix = '{name} {out_channel}x{in_cahnnel}x{ksize}x{ksize}'.format(ksize=shape[2], name=filter.name, out_channel='[Real:%d, Displayed: %d]' % (shape[-1], out_filter_shape), in_cahnnel=shape[1])
-                # for row in range(grid_x):
-                #     for col in range(grid_y):
-                #         ax2[row][col].imshow(filter_transpose[row * grid_y + col][0])  # 获取每个通道输出的图像， 选择的是第一张图片
-                #         # ax2[row][col].set_xticks([])
-                #         # ax2[row][col].set_yticks([])
-                #         # ax2[row][col].set_title('Channel %d' % (row * grid_y + col))
-                # fig2.suptitle(filter_title_prefix)
-                # plt.show(block=False)
-            plt.pause(500)  # 等待 500 秒, 不让其自动退出
+            # fig1, ax1 = plt.subplots(nrows=1, ncols=1)
+            # one_image = input_image[0]  # 减少维度
+            # I = np.stack([one_image[:, :, 0], one_image[:, :, 1], one_image[:, :, 2]], axis=2)  # 拼成像素矩阵，元素是RGB分类值
+            # ax1.imshow(I)
+            # ax1.set_title('Image Input, Label=%s' % (testDataGenerater.label_names[np.argmax(input_label[0])]))
+            # plt.show(block=False)
+            # 绘图
+            merged_value = self._session.run(merged, feed_dict={self.test_images_input: input_image, self.test_labels_input: input_label})
+            weights_writer.add_summary(merged_value)  # 每一个 step 记录一次
             break
+        weights_writer.close()
+
 
     def evaulateOnTest(self, testDataGenerater, **kwargs):
         """
@@ -245,20 +197,17 @@ class TensorflowModelLoader(ModelLoader):
         :param kwargs: 参数
         :return:
         """
-        steps_per_batch = testDataGenerater.num_images() // self.cnn.batch_size
-        batch_count = 1
-        accuracies = []
-        for images in range(steps_per_batch):
-            images_test, labels_test = testDataGenerater.generate_augment_batch()
-            accuracy = self._session.run(self.test_accuracy, feed_dict={
-                self.test_images_input: images_test,
-                self.test_labels_input: labels_test
-            })
-            pprint('Batch %d, Test accuracy: %.3f' % (batch_count, accuracy))
-            accuracies.append(accuracy)
-            batch_count += 1
-        accuracies = np.array(accuracies)
-        print('Test accuracy: \nMean: {0:.3f}\nMax: {1:.3f}\nMin: {2:.3f}'.format(np.mean(accuracies), np.max(accuracies), np.min(accuracies)))
+        valid_accs = []
+        for index, (images_batch, labels_batch) in enumerate(testDataGenerater.generate_augment_batch()):
+            va = self._session.run(self.test_accuracy, feed_dict={self.test_images_input: images_batch, self.test_labels_input: labels_batch})
+            valid_accs.append(va)
+            print('Batch {0}, Test accuracy: {1}'.format(index +1, va))
+        # 平均的验证集准确率
+        valid_accs = np.array(valid_accs)
+        mean_valid_acc = np.mean(valid_accs)
+        max_acc = np.max(valid_accs)
+        min_acc = np.min(valid_accs)
+        print('Average accuracy: {0:.3f}, Min accuracy: {1:.3f}, Max accuracy :{2:.3f}'.format(mean_valid_acc, min_acc, max_acc))
 
     def __del__(self):
         """
@@ -278,7 +227,7 @@ class KerasModelLoader(ModelLoader):
         if not isinstance(model, cifar10_buildNet2.KerasCNNNetwork):
             raise ValueError('参数错误!')
         self.model = model
-        super(KerasModelLoader, self).__init__(model_saved_prefix=os.sep.join(('models', str(model))))
+        super(KerasModelLoader, self).__init__(logout_prefix=os.sep.join(('logouts', str(model))), model_saved_prefix=os.sep.join(('models', str(model))))
         # 载入一些测试数据
         self._init()
 
@@ -306,6 +255,9 @@ class KerasModelLoader(ModelLoader):
                               metrics=['accuracy'])
         # 加载模型的权重
         self.model.loadWeights(os.sep.join([self.model_saved_prefix, 'checkpoints.h5']))
+        # 加载各层的输出
+        self.layers = dict([(layer.name, layer) for layer in self.model._model.layers[1:]])
+        self.image_input_placeholder = self.model._model.input
 
     def displayConv(self, **kwargs):
         """
@@ -319,7 +271,6 @@ class KerasModelLoader(ModelLoader):
         self._plotAImage(img=image)
         # 输出
 
-
     def evaulateOnTest(self, **kwargs):
         """
         测试准确率
@@ -328,6 +279,122 @@ class KerasModelLoader(ModelLoader):
         """
         loss, acc = self.model.evaluate(self.X_test, self.y_test, **kwargs)
         print('Test Loss:{0:.3f}, Test Accuracy:{1:.3f}'.format(loss, acc))
+
+    @staticmethod
+    def _deprocess_image(x):
+        x -= x.mean()
+        x /= (x.std() - 1e-5)
+        x *= 0.1
+        x += 0.5
+        x = np.clip(x, 0, 1)
+        x *= 255
+        x = np.clip(x, 0, 255).astype(np.uint8)
+        return x
+
+    @staticmethod
+    def normalize(x):
+        from keras import backend as K
+        # utility function to normalize a tensor by its L2 norm
+        return x / (K.sqrt(K.mean(K.square(x))) + K.epsilon())
+
+    def _compute_gradient_ascending(self, layer_name, size=200):
+        import numpy as np
+        from keras import backend as K
+        kept_filters = []
+        for filter_index in range(20):
+            # we build a loss function that maximizes the activation
+            # of the nth filter of the layer considered
+            layer_output = self.layers[layer_name].output
+            if K.image_data_format() == 'channels_first':
+                loss = K.mean(layer_output[:, filter_index, :, :])
+            else:
+                loss = K.mean(layer_output[:, :, :, filter_index])
+
+            # we compute the gradient of the input picture wrt this loss
+            grads = K.gradients(loss, self.image_input_placeholder)[0]
+
+            # normalization trick: we normalize the gradient
+            grads = self.normalize(grads)
+
+            # this function returns the loss and grads given the input picture
+            iterate = K.function([self.image_input_placeholder], [loss, grads])
+
+            # step size for gradient ascent
+            step = 1.
+
+            # we start from a gray image with some random noise
+            if K.image_data_format() == 'channels_first':
+                input_img_data = np.random.random((1, 3, size, size))
+            else:
+                input_img_data = np.random.random((1, size, size, 3))
+            input_img_data = (input_img_data - 0.5) * 20 + 128
+
+            # we run gradient ascent for 20 steps
+            for i in range(20):
+                loss_value, grads_value = iterate([input_img_data])
+                input_img_data += grads_value * step
+
+                print('Current loss value:', loss_value)
+                if loss_value <= 0.:
+                    # some filters get stuck to 0, we can skip them
+                    break
+
+            # decode the resulting input image
+            if loss_value > 0:
+                img = self._deprocess_image(input_img_data[0])
+                kept_filters.append((img, loss_value))
+        return kept_filters
+
+    def displayConvWeights(self, **kwargs):
+        """
+        可视化卷积核
+        :param kwargs:
+        :return:
+        """
+        # 选取数据
+        from keras.preprocessing.image import save_img
+        one_image, one_label = self.X_test[0], self.y_test[0]
+        # 输出原图
+        # fig1, ax1 = plt.subplots(nrows=1, ncols=1)
+        # I = np.stack([one_image[:, :, 0], one_image[:, :, 1], one_image[:, :, 2]], axis=2)  # 拼成像素矩阵，元素是RGB分类值
+        # ax1.imshow(I)
+        # ax1.set_title('Image Input, Label=%s' % (testDataGenerater.label_names[np.argmax(input_label[0])]))
+        # plt.show(block=False)
+        # 各层卷积核可视化
+
+
+        kept_filters = self._compute_gradient_ascending('conv2d_22')
+        # we will stich the best 64 filters on a 8 x 8 grid.
+        n = 3
+
+        # the filters that have the highest loss are assumed to be better-looking.
+        # we will only keep the top 64 filters.
+        kept_filters.sort(key=lambda x: x[1], reverse=True)
+        kept_filters = kept_filters[:n * n]
+
+        # build a black picture with enough space for
+        # our 8 x 8 filters of size 128 x 128, with a 5px margin in between
+        margin = 5
+        img_width = img_height = 200
+        width = n * img_width + (n - 1) * margin
+        height = n * img_height + (n - 1) * margin
+        stitched_filters = np.zeros((width, height, 3))
+
+        # fill the picture with our saved filters
+        for i in range(n):
+            for j in range(n):
+                img, loss = kept_filters[i * n + j]
+                width_margin = (img_width + margin) * i
+                height_margin = (img_height + margin) * j
+                stitched_filters[
+                width_margin: width_margin + img_width,
+                height_margin: height_margin + img_height, :] = img
+
+        # save the result to disk
+        save_img('stitched_filters_%dx%d.png' % (n, n), stitched_filters)
+
+        # plt.pause(500)  # 等待 500 秒, 不让其自动退出
+
 
 
 
