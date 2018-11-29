@@ -260,7 +260,7 @@ class KerasModelLoader(ModelLoader):
 
         x_test -= x_test_mean
 
-        y_test = keras.utils.to_categorical(y_test, self.model.output.get_shape().as_list()[1])  # 处理标签
+        y_test = keras.utils.to_categorical(y_test, self.model.output.get_shape().as_list()[1])  # 处理标签, 需要 softmax 输出的维度
         self.X_test = x_test
         self.y_test = y_test
         self.X_shape = x_test.shape[1:]
