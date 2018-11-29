@@ -16,6 +16,7 @@ def rgb2gray(rgb):
     gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
     return gray
 
+
 class CifarData(object):
 
     """
@@ -58,6 +59,7 @@ class CifarData(object):
             X = self.reshape_X(X)  # 转换为 tensorflow 格式的数据（我不需要别的处理）
             self.X = X
             self.Y = Y
+
 
 class Cifar10DataGenerator(object):
 

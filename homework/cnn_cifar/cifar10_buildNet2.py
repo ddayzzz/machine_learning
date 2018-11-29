@@ -2,32 +2,30 @@ import tensorflow as tf
 from math import sqrt
 
 
+class TensorflowNetwork(object):
 
-class CNNNetwork(object):
-
-    """
-    CNN 常用的结构
-    """
-
-    def __init__(self,
-                 batch_size=128,
-                 image_width_height=32,
-                 conv_strides=[1,1,1,1],
-                 pool_kernel_size=[1,3,3,1],
-                 pool_strides=[1,2,2,1],
-                 num_classes=10,
-                 keep_prob=0.5,
-                 regularizer_ratio=0.002,
-                 init_learning_rate=0.001,
-                 num_epoch_per_decay=5,
-                 learning_rate_decay=0.1,
-                 batch_normalization_epsilon=0.001,
-                 tiny_output_logs=True
-                 ):
+    def __init__(self, training,
+                 batch_size,
+                 image_width_height,
+                 conv_filter_strides,
+                 conv_filter_size,
+                 pool_kernel_size,
+                 pool_strides,
+                 num_classes,
+                 keep_prob,
+                 regularizer_ratio,
+                 batch_normalization_epsilon,
+                 num_examples_per_epoch,
+                 tiny_output_logs=True,
+                 displayKernelOnTensorboard=False,
+                 **kwargs):
         """
+        定义基于 Tensorflow 的神经网络结构
+        :param training: 是否是训练状态, 目前是影响 dropout
         :param batch_size: 每一次送如神经网络的样本数量，满足 batch_size * epoch = num_examples_per_epoch
         :param image_width_height: 图像的长度和高度，默认是 32， VGG 等其他的长度不一样
-        :param conv_strides: 卷积层步长，输入张量的每一个维度上都只是移动1
+        :param conv_filter_strides: 卷积层步长，一般是输入张量的每一个维度上都只是移动1
+        :param conv_filter_size: 卷积核的大小, 一般是 3x3
         :param pool_kernel_size: 池化的核，不需要再 BATCH_SIZE 和 CHANNELS 上采样。所以移动 1
         :param pool_strides: 池化的步长
         :param keep_prob: dropout 的比例
@@ -36,10 +34,17 @@ class CNNNetwork(object):
         :param num_epoch_per_decay: 当训练完一批数据的
         :param batch_normalization_epsilon: 对卷积层输出做 batch normalization 的参数 epsilon
         :param learning_rate_decay: 学习率衰减率， num_epoch_per_decay 可以决定衰减的 epoch 间隔
-        :param tiny_output_logs: 仅仅输出 loss acc 和 learning rate 的数据（不包含各层权重等）
+        :param num_examples_per_epoch: epoch 包含的样本数量（cifar10一般的训练集就是50000）
+        :param tiny_output_logs: 是否仅仅显示学习率 loss 和准确率
+        :param displayKernelOnTensorboard: 是否显示卷积核中的过滤器的输出
+        :param kwargs: 参数
         """
-
-        self.conv_strides = conv_strides
+        self.training = training
+        self.num_examples_per_epoch = num_examples_per_epoch
+        self.displayKernelOnTensorboard = displayKernelOnTensorboard
+        self.tiny_output_logs = tiny_output_logs
+        self.conv_filter_strides = conv_filter_strides
+        self.conv_filter_size = conv_filter_size
         self.pool_kernel_size = pool_kernel_size
         self.pool_strides = pool_strides
         self.num_classes = num_classes
@@ -48,30 +53,7 @@ class CNNNetwork(object):
         self.batch_normalization_epsilon = batch_normalization_epsilon
 
         self.batch_size = batch_size
-        self.init_learning_rate = init_learning_rate
-        self.num_epoch_per_decay = num_epoch_per_decay
-        self.learning_rate_decay = learning_rate_decay
-        self.tiny_output_logs = tiny_output_logs
         self.image_width_height = image_width_height
-        # 记录(非训练过程)卷积核的输出信息，注意需要保存输出图像的大小，后面几层仅过了激活要 / 2
-        # 由 tf collection 保存
-
-
-
-class TensorflowNetwork(CNNNetwork):
-
-    def __init__(self, training, num_examples_per_epoch, displayKernelOnTensorboard=False, **kwargs):
-        """
-        定义基于 Tensorflow 的神经网络结构
-        :param training: 是否是训练状态
-        :param num_examples_per_epoch: epoch 包含的样本数量（cifar10一般的训练集就是50000）
-        :param displayKernelOnTensorboard: 是否显示卷积核中的过滤器的输出
-        :param kwargs: 参数
-        """
-        self.training = training
-        self.num_examples_per_epoch = num_examples_per_epoch
-        self.displayKernelOnTensorboard = displayKernelOnTensorboard
-        super(TensorflowNetwork, self).__init__(**kwargs)
 
     def inference(self, images, **kwargs):
         raise NotImplementedError('没有实现前向传播网络')
@@ -94,7 +76,7 @@ class TensorflowNetwork(CNNNetwork):
         :param kernel: 卷积核 4-D 张量 [Y, X, NumChannels, NumKernels]
         :param grid_Y: 输出小卷积核的长 满足 NumKernels == grid_Y * grid_X
         :param grid_X: 输出小卷积的宽 满足 NumKernels == grid_Y * grid_X
-        :param pad: 小卷积核的间隔像素
+        :param pad: 卷积核通道之间的间隔像素
         :return: 4-D 张量 [(Y+2*pad)*grid_Y, (X+2*pad)*grid_X, NumChannels, 1].
         """
         # 求卷积核的最大和最小值
@@ -133,12 +115,14 @@ class TensorflowNetwork(CNNNetwork):
         # # scale to [0, 255] and convert to uint8
         return tf.image.convert_image_dtype(x7, dtype=tf.uint8)
 
-    def _add_conv_output_image(self, scope, kernel):
+    def _add_conv_output_image(self, scope, kernel, max_output_image):
         """
         https://gist.github.com/panmari/4622b78ce21e44e2d69c
         添加 卷积核的输出
-        :param conv_output: 卷积核输出
-        :return:
+        :param scope: 变量层的名称
+        :param kernel: 卷积核(alias 过滤器 权重)
+        :param max_output_image: 输出的最终的图片数量(不超过 batch_size)
+        :return: 不输出
         """
 
         # 拆分 grid 的行列 是的行列相乘等于 kernel 的输出 channel
@@ -147,13 +131,13 @@ class TensorflowNetwork(CNNNetwork):
             for i in range(int(sqrt(float(n))), 0, -1):
                 if n % i == 0:
                     if i == 1:
-                        print('不要用质数作为 filter 输出的通道数')
+                        print('It is not good at using the prime number as the filter output channel!')
                     return (i, int(n / i))
 
         out_channel = kernel.get_shape().as_list()[3]
         grid_y, grid_x = factorization(out_channel)
         grid = self.put_kernels_on_grid(kernel=kernel, grid_X=grid_x, grid_Y=grid_y)
-        tf.summary.image(scope.name + '/filter', grid, max_outputs=out_channel)
+        tf.summary.image(scope.name + '/filter', grid, max_outputs=max_output_image)
 
     def _create_or_get_variable(self, name, shape, initializer=tf.contrib.layers.xavier_initializer()):
         """
@@ -303,7 +287,7 @@ class TensorflowNetwork(CNNNetwork):
         # 总的损失是交叉熵损失加上所有变量的 L2正则化损失
         return tf.add_n(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
 
-    def train(self, total_loss, global_step):
+    def train(self, total_loss, global_step, init_learning_rate, num_epoch_per_decay, learning_rate_decay):
         """
         训练
         :param total_loss: 所有的损失的操添加操作，也就是 self.loss 返回的结果
@@ -312,12 +296,12 @@ class TensorflowNetwork(CNNNetwork):
         """
         # 学习率衰减：影响学习率的变量.
         num_batches_per_epoch = self.num_examples_per_epoch / self.batch_size  # 每一训练完的一次 epoch 的迭代次数(BATCH_SIZE每一批次)
-        decay_steps = int(num_batches_per_epoch * self.num_epoch_per_decay)  # 跑完多少次 epoch 就衰减
+        decay_steps = int(num_batches_per_epoch * num_epoch_per_decay)  # 跑完多少次 epoch 就衰减
         # 学习率随着迭代次数指数衰减
-        learning_rate = tf.train.exponential_decay(self.init_learning_rate,
+        learning_rate = tf.train.exponential_decay(init_learning_rate,
                                                    global_step,  # 计算总的 step
                                                    decay_steps,  # 所有样本训练样本完的迭代次数
-                                                   self.learning_rate_decay,  # 衰减率
+                                                   learning_rate_decay,  # 衰减率
                                                    staircase=True)  # 阶梯状衰减
         # 显示学习率
         tf.summary.scalar('learning_rate', learning_rate)
@@ -339,19 +323,7 @@ class TensorflowNetwork(CNNNetwork):
         return accuracy, correct_prediction
 
     def getConvList(self):
-        """
-        获取所有的卷积层
-        :return: 卷积层列表（按照添加的顺序） 元素为张量
-        """
-        return tf.get_collection('convs')
-
-    def getWeights(self):
-        """
-        获取所有的卷积核
-        :return: 卷积核列表（按照添加的顺序） 元素为张量
-        """
-        x = tf.get_collection('weights')
-        return x
+        raise NotImplementedError("getConvList")
 
 
 class NormalCNNNetwork(TensorflowNetwork):
@@ -362,7 +334,9 @@ class NormalCNNNetwork(TensorflowNetwork):
         :param training: 是否是训练状态
         :param num_examples_per_epoch: 总体的样本数量
         """
-        super(NormalCNNNetwork, self).__init__(training=training, num_examples_per_epoch=num_examples_per_epoch,**kwargs)
+        super(NormalCNNNetwork, self).__init__(training=training,
+                                               num_examples_per_epoch=num_examples_per_epoch,
+                                               **kwargs)
 
     def _add_signle_conv(self, input, filter_in_channels, filter_out_channels, layerId, activation=tf.nn.relu):
         """
@@ -376,8 +350,8 @@ class NormalCNNNetwork(TensorflowNetwork):
         :return:
         """
         with tf.variable_scope('layer%d' % layerId) as scope:
-            weights = self._create_or_get_variable(name='weights', shape=[5, 5, filter_in_channels, filter_out_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
-            conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_strides, padding='SAME', name='conv')
+            weights = self._create_or_get_variable(name='weights', shape=[self.conv_filter_size, self.conv_filter_size, filter_in_channels, filter_out_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
+            conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_filter_strides, padding='SAME', name='conv')
             biases = self._create_or_get_variable(name='biases', shape=[filter_out_channels], initializer=tf.zeros_initializer())  # 偏移
             to_activate = tf.nn.bias_add(conv, biases)  # biases 只能是1-D维度的
             # 进行 batch_norm
@@ -385,7 +359,7 @@ class NormalCNNNetwork(TensorflowNetwork):
             self._add_activated_summary(conv)
         return conv
 
-    def _add_signle_conv_bn_act(self, input, filter_in_channels, filter_out_channels, conv_output_size, layerId, activation=tf.nn.relu):
+    def _add_signle_conv_bn_act(self, input, filter_in_channels, filter_out_channels, layerId, activation=tf.nn.relu):
         """
         添加一个简单的卷积层：卷积、偏移、batch_norm  和 激活
         :param input: 输入的4-D张量
@@ -397,13 +371,11 @@ class NormalCNNNetwork(TensorflowNetwork):
         :return:
         """
         with tf.variable_scope('layer%d' % layerId) as scope:
-            weights = self._create_or_get_variable(name='weights', shape=[5, 5, filter_in_channels, filter_out_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
-            conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_strides, padding='SAME', name='conv')
+            weights = self._create_or_get_variable(name='weights', shape=[self.conv_filter_size, self.conv_filter_size, filter_in_channels, filter_out_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
+            conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_filter_strides, padding='SAME', name='conv')
 
             # self._add_conv_output_image(scope, weights, conv_output=conv, conv_output_size=conv_output_size,
             #                             filter_out_channels=filter_out_channels)
-            tf.add_to_collection('convs', conv)  # 添加卷积层
-            tf.add_to_collection('weights', weights)  # 添加卷积核
             biases = self._create_or_get_variable(name='biases', shape=[filter_out_channels], initializer=tf.zeros_initializer())  # 偏移
             to_activate = tf.nn.bias_add(conv, biases)  # biases 只能是1-D维度的
             to_activate = self._add_batch_normalization_for_tensor_input(to_activate, channel_dim=filter_out_channels)
@@ -423,16 +395,16 @@ class NormalCNNNetwork(TensorflowNetwork):
         POOL_KERNEL_SIZE = self.pool_kernel_size
         POOL_STRIDES = self.pool_strides
         # Layer1
-        layer1 = self._add_signle_conv_bn_act(input=images, layerId=1, filter_in_channels=3, filter_out_channels=32, conv_output_size=32)
+        layer1 = self._add_signle_conv_bn_act(input=images, layerId=1, filter_in_channels=3, filter_out_channels=32,)
         # Layer2
         layer2 = self._add_max_pool(
-            input=self._add_signle_conv_bn_act(input=layer1, layerId=2, filter_in_channels=32, filter_out_channels=32, conv_output_size=32),
+            input=self._add_signle_conv_bn_act(input=layer1, layerId=2, filter_in_channels=32, filter_out_channels=32),
             ksize=POOL_KERNEL_SIZE, strides=POOL_STRIDES, padding='SAME', op_id=2)
         # Layer3
-        layer3 = self._add_signle_conv_bn_act(input=layer2, layerId=3, filter_in_channels=32, filter_out_channels=64, conv_output_size=16)
+        layer3 = self._add_signle_conv_bn_act(input=layer2, layerId=3, filter_in_channels=32, filter_out_channels=64)
         # Layer4
         layer4 = self._add_max_pool(
-            input=self._add_signle_conv_bn_act(input=layer3, layerId=4, filter_in_channels=64, filter_out_channels=64, conv_output_size=16),
+            input=self._add_signle_conv_bn_act(input=layer3, layerId=4, filter_in_channels=64, filter_out_channels=64),
             ksize=POOL_KERNEL_SIZE, strides=POOL_STRIDES, padding='SAME', op_id=4)
         # Layer5
         layer5 = self._add_flatten_layer(layer4, 384, 5)
@@ -445,27 +417,41 @@ class NormalCNNNetwork(TensorflowNetwork):
     def __str__(self):
         return 'NormalCNNNetwork'
 
+
 class VGGNetwork(TensorflowNetwork):
 
-    def __init__(self, training, num_examples_per_epoch, **kwargs):
+    def __init__(self, training, num_examples_per_epoch, conv_filter_size=3, **kwargs):
         """
         VGG19 cifar-10 的实现
         :param num_examples_per_epoch: 样本总量
+        :param conv_filter_size: 卷积的过滤器大小, VGG19 cifar10 默认为3
         """
-        super(VGGNetwork, self).__init__(training=training, num_examples_per_epoch=num_examples_per_epoch,pool_strides=[1,2,2,1], pool_kernel_size=[1,2,2,1], **kwargs)
+        super(VGGNetwork, self).__init__(training=training,
+                                         num_examples_per_epoch=num_examples_per_epoch,
+                                         pool_strides=[1,2,2,1],
+                                         pool_kernel_size=[1,2,2,1],
+                                         batch_size=128,
+                                         image_width_height=32,
+                                         conv_filter_strides=[1,1,1,1],
+                                         conv_filter_size=conv_filter_size,
+                                         num_classes=10,
+                                         keep_prob=0.5,
+                                         regularizer_ratio=0.002,
+                                         batch_normalization_epsilon=0.001,
+                                         **kwargs)
 
     def _add_vgg_conv_bn_act_layer(self, input, id_conv, in_filter_channels, out_filter_channels, lastConv=False):
         convname = 'conv%d' % id_conv
         with tf.variable_scope(convname) as scope:
             weights = self._create_or_get_variable(name='weights', shape=[3, 3, in_filter_channels, out_filter_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
 
-            conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_strides, padding='SAME', name=convname)
+            conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_filter_strides, padding='SAME', name=convname)
             if lastConv:
                 # 添加这个 block 的卷积核输出
                 tf.add_to_collection('convs', conv)  # 添加卷积层
                 tf.add_to_collection('weights', weights)  # 添加卷积核
                 if self.displayKernelOnTensorboard:
-                    self._add_conv_output_image(scope=scope, kernel=weights)
+                    self._add_conv_output_image(scope=scope, kernel=weights, max_output_image=1)  # 默认显示一张图片
             to_activate = self._add_batch_normalization_for_tensor_input(conv, out_filter_channels)
             # 进行 batch_norm
             activated = tf.nn.relu(to_activate)  # 激活
@@ -514,10 +500,18 @@ class VGGNetwork(TensorflowNetwork):
     def __str__(self):
         return 'VGGNetwork_based_on_tensorflow'
 
+    def getConvList(self):
+        """
+        获取所有的卷积层
+        :return: 卷积层列表（按照添加的顺序） 元素为张量
+        """
+        return tf.get_collection('convs')
+
+
 class PretrainedVGG19Network(TensorflowNetwork):
 
     """
-    定义的使用 tensornets 的现有的网络结构, 使用 VGG19 需要使用的图片的大小为 224
+    定义的使用 tensornets 的现有的网络结构, 使用 VGG19 需要使用的图片的大小为 224. 目前存在问题
     继承普通的 CNNNetwork 结构
     """
     def __init__(self, training, num_all_batchs, **kwargs):
@@ -538,34 +532,46 @@ class PretrainedVGG19Network(TensorflowNetwork):
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))  # 求值为 1.0 的数量
         return accuracy, correct_prediction
 
-    def train(self, total_loss, global_step):
+    def train(self, total_loss, global_step, init_learning_rate, num_epoch_per_decay, learning_rate_decay, **kwargs):
         # 学习率衰减：影响学习率的变量.
         num_batches_per_epoch = self.num_examples_per_epoch / self.batch_size  # 每一训练完的一次 epoch 的迭代次数(BATCH_SIZE每一批次)
-        decay_steps = int(num_batches_per_epoch * self.num_epoch_per_decay)  # 跑完多少次 epoch 就衰减
+        decay_steps = int(num_batches_per_epoch * num_epoch_per_decay)  # 跑完多少次 epoch 就衰减
         # 学习率随着迭代次数指数衰减
-        learning_rate = tf.train.exponential_decay(self.init_learning_rate,
+        learning_rate = tf.train.exponential_decay(init_learning_rate,
                                                    global_step,  # 计算总的 step
                                                    decay_steps,  # 所有样本训练样本完的迭代次数
-                                                   self.learning_rate_decay,  # 衰减率
+                                                   learning_rate_decay,  # 衰减率
                                                    staircase=True)  # 阶梯状衰减
         # 显示学习率
         tf.summary.scalar('learning_rate', learning_rate)
         return tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(total_loss, global_step=global_step), learning_rate
 
-class KerasCNNNetwork(CNNNetwork):
+
+class KerasCNNNetwork(object):
 
     """
     使用 Keras 做为框架的 CNN 结构
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self,
+                 batch_size,
+                 num_classes,
+                 regularizer_ratio,
+                 **kwargs):
+        """
+        使用 Keras 框架的 CNN
+        :param init_leanring_rate: 初始学习率
+        :param kwargs:
+        """
         self._model = None
-        super(KerasCNNNetwork, self).__init__(**kwargs)
+        self.batch_size = batch_size
+        self.num_classes = num_classes
+        self.regularizer_ratio = regularizer_ratio
 
     def print_summary(self):
         raise NotImplementedError('print_summary')
 
-    def learn_rate_changer(self):
+    def learn_rate_changer(self, init_learning_rate):
         raise NotImplementedError('learn_rate_changer')
 
     def loadWeights(self, file):
@@ -596,14 +602,19 @@ class KerasCNNNetwork(CNNNetwork):
     def inference(self, inputs_shape, **kwargs):
         raise NotImplementedError('没有实现前向传播网络')
 
+
 class KerasResNetwork(KerasCNNNetwork):
 
     """
     使用 Keras 的残差网络(ResNet)实现
     """
 
-    def __init__(self, **kwargs):
-        super(KerasResNetwork, self).__init__(conv_strides=1, **kwargs)
+    def __init__(self,
+                 batch_size=32,
+                 num_classes=10,
+                 regularizer_ratio=1e-4,
+                 **kwargs):
+        super(KerasResNetwork, self).__init__(batch_size=batch_size, num_classes=num_classes, regularizer_ratio=regularizer_ratio, **kwargs)
         self.depth = 20 # 使用 ResNet20
         self.resNetVersion = 2  # ResNet20 版本 2
 
@@ -639,10 +650,8 @@ class KerasResNetwork(KerasCNNNetwork):
             X = conv(X)
         return X
 
-
     def inference(self, inputs_shape, **kwargs):
         """
-        https://github.com/keras-team/keras/blob/master/examples/cifar10_resnet.py
         定义传播过程
         :param inputs_shape: 样本数据除去 batch 的维度信息
         :param kwargs: 其他的参数
@@ -710,13 +719,13 @@ class KerasResNetwork(KerasCNNNetwork):
         print('ResNet%dv%d:' % (self.depth, self.resNetVersion))
         self._model.summary()
 
-    def learn_rate_changer(self):
+    def learn_rate_changer(self, init_learning_rate):
         """
         定义的是学习率下降的趋势函数
         :return: 返回一元函数对象
         """
         def changer(epoch):
-            lr = self.init_learning_rate
+            lr = init_learning_rate
             if epoch > 180:
                 lr *= 0.5e-3
             elif epoch > 160:
@@ -732,6 +741,3 @@ class KerasResNetwork(KerasCNNNetwork):
 
     def __str__(self):
         return 'KerasResNetwork%dv%d' % (self.depth, self.resNetVersion)
-
-
-

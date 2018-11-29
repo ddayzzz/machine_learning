@@ -7,10 +7,6 @@ from matplotlib import pyplot as plt
 from math import sqrt
 
 
-
-
-
-
 class ModelLoader(object):
 
     """
@@ -185,7 +181,8 @@ class TensorflowModelLoader(ModelLoader):
             # plt.show(block=False)
             # 绘图
             merged_value = self._session.run(merged, feed_dict={self.test_images_input: input_image, self.test_labels_input: input_label})
-            weights_writer.add_summary(merged_value)  # 每一个 step 记录一次
+            weights_writer.add_summary(merged_value)  # 记录
+            print("Please run Tensorboard to view the result")
             break
         weights_writer.close()
 
@@ -217,16 +214,18 @@ class TensorflowModelLoader(ModelLoader):
         print('Close tf Session')
         self._session.close()
 
+
 class KerasModelLoader(ModelLoader):
 
     """
     Keras 版本的模型加载器
     """
 
-    def __init__(self, model):
+    def __init__(self, model, init_leanring_rate):
         if not isinstance(model, cifar10_buildNet2.KerasCNNNetwork):
             raise ValueError('参数错误!')
         self.model = model
+        self.init_leanring_rate = init_leanring_rate
         super(KerasModelLoader, self).__init__(logout_prefix=os.sep.join(('logouts', str(model))), model_saved_prefix=os.sep.join(('models', str(model))))
         # 载入一些测试数据
         self._init()
@@ -247,7 +246,7 @@ class KerasModelLoader(ModelLoader):
         self.X_shape = x_test.shape[1:]
 
         # 初始化网络结构
-        lr_changer = self.model.learn_rate_changer()
+        lr_changer = self.model.learn_rate_changer(self.init_leanring_rate)
         self.model.inference(inputs_shape=self.X_shape)
         # 建立模型
         self.model.buildModel(loss='categorical_crossentropy',

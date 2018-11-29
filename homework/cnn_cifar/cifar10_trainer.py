@@ -10,15 +10,21 @@ class Trainer(object):
     """
     自定义的训练器
     """
-    def __init__(self, logout_prefix, model_saved_prefix, **kwargs):
+    def __init__(self, logout_prefix, model_saved_prefix, init_learning_rate, learning_rate_decay_per_epoch, learning_rate_decay_rate, **kwargs):
         """
         定义一个训练器
         :param logout_prefix: 输出的日志文件目录
         :param model_saved_prefix: 输出的保存的模型目录
+        :param init_learning_rate: 初始的学习率
+        :param learning_rate_decay_per_epoch: 多少 epoch 就减少学习率
+        :param learning_rate_decay_rate: 学习衰减率
         :param kwargs: 其他参数
         """
         self.logout_prefix = logout_prefix
         self.model_saved_prefix = model_saved_prefix
+        self.init_learning_rate = init_learning_rate
+        self.learning_rate_decay_per_epoch = learning_rate_decay_per_epoch
+        self.learning_rate_decay_rate = learning_rate_decay_rate
         if not os.path.exists(logout_prefix):
             os.makedirs(logout_prefix)
 
@@ -35,19 +41,27 @@ class Trainer(object):
         """
         raise NotImplementedError('没有实现 train!')
 
+
 class TensorflowTrainer(Trainer):
 
-    def __init__(self, cnnnet, max_epoch, ):
+    def __init__(self, cnnnet, max_epoch, init_learning_rate, learning_rate_decay_per_epoch, learning_rate_decay_rate):
         """
         TF 训练器
         :param cnnnet: TF 神经网络
         :param max_epoch: 最大 epoch
+        :param init_learning_rate: 初始的学习率
+        :param learning_rate_decay_per_epoch: 多少 epoch 就减少学习率
+        :param learning_rate_decay_rate: 学习衰减率
         """
         if not isinstance(cnnnet, cifar10_buildNet2.TensorflowNetwork):
             raise ValueError('请使用 TensorflowNetwork 子类作为 CNN 的参数')
         self.cnn = cnnnet
         self.max_epoch = max_epoch
-        super(TensorflowTrainer, self).__init__(logout_prefix=os.sep.join(('logouts', str(cnnnet))), model_saved_prefix=os.sep.join(('models', str(cnnnet))))
+        super(TensorflowTrainer, self).__init__(logout_prefix=os.sep.join(('logouts', str(cnnnet))),
+                                                model_saved_prefix=os.sep.join(('models', str(cnnnet))),
+                                                init_learning_rate=init_learning_rate,
+                                                learning_rate_decay_per_epoch=learning_rate_decay_per_epoch,
+                                                learning_rate_decay_rate=learning_rate_decay_rate)
 
     def _input_placeholder(self):
         """
@@ -75,7 +89,11 @@ class TensorflowTrainer(Trainer):
         self.train_loss = self.cnn.loss(logits, self.train_labels_input)
         # 计算准确率
         self.train_accuracy, _ = self.cnn.accuracy(logits, self.train_labels_input)
-        train_op, lr = self.cnn.train(self.train_loss, self.global_steps)
+        train_op, lr = self.cnn.train(self.train_loss,
+                                      self.global_steps,
+                                      init_learning_rate=self.init_learning_rate,
+                                      num_epoch_per_decay=self.learning_rate_decay_per_epoch,
+                                      learning_rate_decay=self.learning_rate_decay_rate)
 
         self.train_op = train_op
         self.learning_rate = lr
@@ -164,19 +182,33 @@ class TensorflowTrainer(Trainer):
 
             train_writer.close()
 
+
 class KerasTrainer(Trainer):
 
     """
     正对于 Keras 模型的训练器
     """
 
-    def __init__(self, model, max_epochs):
+    def __init__(self, model, max_epochs, init_learning_rate, learning_rate_decay_per_epoch, learning_rate_decay_rate, tiny_output_logs=True):
+        """
+        Keras 训练器
+        :param cnnnet: TF 神经网络
+        :param max_epoch: 最大 epoch
+        :param init_learning_rate: 初始的学习率
+        :param learning_rate_decay_per_epoch: 多少 epoch 就减少学习率
+        :param learning_rate_decay_rate: 学习衰减率
+        :param tiny_output_logs: 是否仅仅显示 train loss 学习率 和 train 准确率
+        """
         if not isinstance(model, cifar10_buildNet2.KerasCNNNetwork):
             raise ValueError('请使用 KerasCNNNetwork 子类作为 CNN 的参数')
         self.model = model  # Keras 模型
+        self.tiny_output_logs = tiny_output_logs
         self.max_epochs = max_epochs
         super(KerasTrainer, self).__init__(logout_prefix=os.sep.join(('logouts', str(model))),
-                                                model_saved_prefix=os.sep.join(('models', str(model))))
+                                           model_saved_prefix=os.sep.join(('models', str(model))),
+                                           init_learning_rate=init_learning_rate,
+                                           learning_rate_decay_per_epoch=learning_rate_decay_per_epoch,
+                                           learning_rate_decay_rate=learning_rate_decay_rate)
 
     def train(self, trainDataGenerater=None, validDataGenerater=None, **kwargs):
         import keras
@@ -188,7 +220,7 @@ class KerasTrainer(Trainer):
         from keras.callbacks import TensorBoard
         # 处理 Tensorboard 的输出
         tensorBoardParams = {'log_dir': self.logout_prefix, 'write_graph': True, 'write_images': True}
-        if not self.model.tiny_output_logs:
+        if not self.tiny_output_logs:
             tensorBoardParams.update({'write_grads': True})  # histgram 可能可以设置 具体参看 Keras 的回调 https://keras-cn.readthedocs.io/en/latest/other/callbacks/
         tensorBoardCallBack = TensorBoard(**tensorBoardParams)
         # 准备保存的检查点(权重文件)
@@ -196,13 +228,13 @@ class KerasTrainer(Trainer):
                                       monitor='val_acc',
                                       verbose=1,
                                       save_best_only=True)  # 保存最好的验证集误差的权重
-        lr_changer = self.model.learn_rate_changer()
+        lr_changer = self.model.learn_rate_changer(init_learning_rate=self.init_learning_rate)
         lr_scheduler = LearningRateScheduler(lr_changer)  # 学习率衰减的调用器
-        lr_reducer = ReduceLROnPlateau(factor=self.model.learning_rate_decay, cooldown=0, patience=5, min_lr=.5e-6)
+        lr_reducer = ReduceLROnPlateau(factor=self.learning_rate_decay_rate, cooldown=0, patience=5, min_lr=.5e-6)
         callbacks = [checkpoints, lr_reducer, lr_scheduler, tensorBoardCallBack]  # 回调顺序
         # 定义数据
         (X_train, y_train), (X_test, y_test) = cifar10.load_data()
-        # 均1化数据 float -> 0 ~ 255
+        # 均1化数据 float -> 0 ~ 1
         X_train = X_train.astype('float32') / 255
         X_test = X_test.astype('float32') / 255
 
@@ -218,12 +250,8 @@ class KerasTrainer(Trainer):
         # 转换标签
         y_test = keras.utils.to_categorical(y_test, self.model.num_classes)
         y_train = keras.utils.to_categorical(y_train, self.model.num_classes)
-        # 数据增强
+        # 数据增强(官方的设置)
         datagen = ImageDataGenerator(
-            # set input mean to 0 over the dataset
-            featurewise_center=False,
-            # set each sample mean to 0
-            samplewise_center=False,
             # divide inputs by std of dataset
             featurewise_std_normalization=False,
             # divide each input by its std
