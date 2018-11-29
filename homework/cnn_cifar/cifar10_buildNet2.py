@@ -726,13 +726,13 @@ class KerasResNetwork(KerasCNNNetwork):
         """
         def changer(epoch):
             lr = init_learning_rate
-            if epoch > 180:
+            if epoch > 300:
                 lr *= 0.5e-3
-            elif epoch > 160:
+            elif epoch > 220:
                 lr *= 1e-3
-            elif epoch > 120:
+            elif epoch > 160:
                 lr *= 1e-2
-            elif epoch > 80:
+            elif epoch > 100:
                 lr *= 1e-1
             print('Learning rate: ', lr)
             return lr

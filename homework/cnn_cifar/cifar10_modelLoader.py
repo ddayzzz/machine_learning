@@ -71,7 +71,13 @@ class ModelLoader(object):
 
 class TensorflowModelLoader(ModelLoader):
 
-    def __init__(self, cnnnet):
+    def __init__(self, cnnnet, logdir=None, modelDir=None):
+        """
+        TF 模型加载器
+        :param cnnnet:
+        :param logdir： 日志文件的输出目录
+        :param modelDir: 模型恢复的文件目录（用于继续训练）
+        """
         if not isinstance(cnnnet, cifar10_buildNet2.TensorflowNetwork):
             raise ValueError('参数错误!')
         self._session = tf.Session()
@@ -79,7 +85,10 @@ class TensorflowModelLoader(ModelLoader):
         self._input_placeholder()
         self._build_compute_graph()  # 这个是必须的操作,用来构建恢复的变量
         # 新建会话
-        super(TensorflowModelLoader, self).__init__(logout_prefix=os.sep.join(('logouts', str(cnnnet))), model_saved_prefix=os.sep.join(('models', str(cnnnet))))
+        ## 恢复的模型和 log
+        logdir = os.sep.join(('logouts', str(cnnnet))) if not logdir else logdir
+        modelDir = os.sep.join(('models', str(cnnnet))) if not modelDir else modelDir
+        super(TensorflowModelLoader, self).__init__(logout_prefix=logdir, model_saved_prefix=modelDir)
         # 恢复保存的模型
         variables_in_train_to_restore = tf.all_variables()
         ckpt = tf.train.get_checkpoint_state(self.model_saved_prefix)
@@ -221,12 +230,15 @@ class KerasModelLoader(ModelLoader):
     Keras 版本的模型加载器
     """
 
-    def __init__(self, model, init_leanring_rate):
-        if not isinstance(model, cifar10_buildNet2.KerasCNNNetwork):
-            raise ValueError('参数错误!')
-        self.model = model
-        self.init_leanring_rate = init_leanring_rate
-        super(KerasModelLoader, self).__init__(logout_prefix=os.sep.join(('logouts', str(model))), model_saved_prefix=os.sep.join(('models', str(model))))
+    def __init__(self, modelFile):
+        """
+        Keras 版本加载器
+        :param modelFile: 模型恢复的文件 *.h5（用于加载整个网络结构）
+        :param logdir： 日志文件的输出目录
+
+        """
+        # 恢复
+        super(KerasModelLoader, self).__init__(logout_prefix=None, model_saved_prefix=modelFile)
         # 载入一些测试数据
         self._init()
 
@@ -236,27 +248,28 @@ class KerasModelLoader(ModelLoader):
         :return:
         """
         from keras.datasets import cifar10
-        from keras.optimizers import Adam
+        from keras.models import load_model
         import keras
+        print('Load model from %s' % self.model_saved_prefix)
+        self.model = load_model(self.model_saved_prefix)
         _, (x_test, y_test) = cifar10.load_data()  # 仅仅加载测试的数据
+
         x_test = x_test.astype('float32') / 255  # 归一化
-        y_test = keras.utils.to_categorical(y_test, self.model.num_classes)  # 处理标签
+
+        x_test_mean = np.mean(x_test, axis=0)
+
+        x_test -= x_test_mean
+
+        y_test = keras.utils.to_categorical(y_test, self.model.output.get_shape().as_list()[1])  # 处理标签
         self.X_test = x_test
         self.y_test = y_test
         self.X_shape = x_test.shape[1:]
 
         # 初始化网络结构
-        lr_changer = self.model.learn_rate_changer(self.init_leanring_rate)
-        self.model.inference(inputs_shape=self.X_shape)
-        # 建立模型
-        self.model.buildModel(loss='categorical_crossentropy',
-                              optimizer=Adam(lr=lr_changer(0)),
-                              metrics=['accuracy'])
-        # 加载模型的权重
-        self.model.loadWeights(os.sep.join([self.model_saved_prefix, 'checkpoints.h5']))
+
         # 加载各层的输出
-        self.layers = dict([(layer.name, layer) for layer in self.model._model.layers[1:]])
-        self.image_input_placeholder = self.model._model.input
+        self.layers = dict([(layer.name, layer) for layer in self.model.layers[1:]])
+        self.image_input_placeholder = self.model.input
 
     def displayConv(self, **kwargs):
         """

@@ -44,7 +44,14 @@ class Trainer(object):
 
 class TensorflowTrainer(Trainer):
 
-    def __init__(self, cnnnet, max_epoch, init_learning_rate, learning_rate_decay_per_epoch, learning_rate_decay_rate):
+    def __init__(self,
+                 cnnnet,
+                 max_epoch,
+                 init_learning_rate,
+                 learning_rate_decay_per_epoch,
+                 learning_rate_decay_rate,
+                 logdir=None,
+                 modelDir=None):
         """
         TF 训练器
         :param cnnnet: TF 神经网络
@@ -52,16 +59,21 @@ class TensorflowTrainer(Trainer):
         :param init_learning_rate: 初始的学习率
         :param learning_rate_decay_per_epoch: 多少 epoch 就减少学习率
         :param learning_rate_decay_rate: 学习衰减率
+        :param logdir： 日志文件的输出目录
+        :param modelDir: 模型恢复的文件目录（用于继续训练）
         """
         if not isinstance(cnnnet, cifar10_buildNet2.TensorflowNetwork):
             raise ValueError('请使用 TensorflowNetwork 子类作为 CNN 的参数')
         self.cnn = cnnnet
         self.max_epoch = max_epoch
-        super(TensorflowTrainer, self).__init__(logout_prefix=os.sep.join(('logouts', str(cnnnet))),
-                                                model_saved_prefix=os.sep.join(('models', str(cnnnet))),
-                                                init_learning_rate=init_learning_rate,
+        # 自定义模型 log 加载路径
+        logdir = os.sep.join(('logouts', str(cnnnet))) if not logdir else logdir
+        modelDir = os.sep.join(('models', str(cnnnet))) if not modelDir else modelDir
+        super(TensorflowTrainer, self).__init__(init_learning_rate=init_learning_rate,
                                                 learning_rate_decay_per_epoch=learning_rate_decay_per_epoch,
-                                                learning_rate_decay_rate=learning_rate_decay_rate)
+                                                learning_rate_decay_rate=learning_rate_decay_rate,
+                                                logout_prefix=logdir,
+                                                model_saved_prefix=modelDir)
 
     def _input_placeholder(self):
         """
@@ -189,7 +201,14 @@ class KerasTrainer(Trainer):
     正对于 Keras 模型的训练器
     """
 
-    def __init__(self, model, max_epochs, init_learning_rate, learning_rate_decay_per_epoch, learning_rate_decay_rate, tiny_output_logs=True):
+    def __init__(self, model, max_epochs,
+                 init_learning_rate,
+                 learning_rate_decay_per_epoch,
+                 learning_rate_decay_rate,
+                 tiny_output_logs=True,
+                 logdir=None,
+                 modelDir=None):
+
         """
         Keras 训练器
         :param cnnnet: TF 神经网络
@@ -198,14 +217,19 @@ class KerasTrainer(Trainer):
         :param learning_rate_decay_per_epoch: 多少 epoch 就减少学习率
         :param learning_rate_decay_rate: 学习衰减率
         :param tiny_output_logs: 是否仅仅显示 train loss 学习率 和 train 准确率
+        :param logdir： 日志文件的输出目录
+        :param modelDir: 模型恢复的文件目录（用于继续训练）
         """
         if not isinstance(model, cifar10_buildNet2.KerasCNNNetwork):
             raise ValueError('请使用 KerasCNNNetwork 子类作为 CNN 的参数')
         self.model = model  # Keras 模型
         self.tiny_output_logs = tiny_output_logs
         self.max_epochs = max_epochs
-        super(KerasTrainer, self).__init__(logout_prefix=os.sep.join(('logouts', str(model))),
-                                           model_saved_prefix=os.sep.join(('models', str(model))),
+        # 自定义路径
+        logdir = os.sep.join(('logouts', str(model))) if not logdir else logdir
+        modelDir = os.sep.join(('models', str(model))) if not modelDir else modelDir
+        super(KerasTrainer, self).__init__(logout_prefix=logdir,
+                                           model_saved_prefix=modelDir,
                                            init_learning_rate=init_learning_rate,
                                            learning_rate_decay_per_epoch=learning_rate_decay_per_epoch,
                                            learning_rate_decay_rate=learning_rate_decay_rate)
@@ -227,7 +251,7 @@ class KerasTrainer(Trainer):
         checkpoints = ModelCheckpoint(filepath=os.sep.join([self.model_saved_prefix, 'checkpoints.h5']),
                                       monitor='val_acc',
                                       verbose=1,
-                                      save_best_only=True)  # 保存最好的验证集误差的权重
+                                      save_best_only=False)  # 保存最好的验证集误差的权重
         lr_changer = self.model.learn_rate_changer(init_learning_rate=self.init_learning_rate)
         lr_scheduler = LearningRateScheduler(lr_changer)  # 学习率衰减的调用器
         lr_reducer = ReduceLROnPlateau(factor=self.learning_rate_decay_rate, cooldown=0, patience=5, min_lr=.5e-6)
