@@ -486,7 +486,8 @@ class VGGNetwork(TensorflowNetwork):
             conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_strides, padding='SAME', name=convname)
             if lastConv:
                 # 添加这个 block 的卷积核输出
-                tf.add_to_collection('convs', conv)
+                tf.add_to_collection('convs', conv)  # 添加卷积层
+                tf.add_to_collection('weights', weights)  # 添加卷积核
             to_activate = self._add_batch_normalization_for_tensor_input(conv, out_filter_channels)
             # 进行 batch_norm
             activated = tf.nn.relu(to_activate)  # 激活

@@ -46,15 +46,20 @@ class ModelLoader(object):
         plt.title('An image')
         plt.imshow(I)
 
-    def displayConv(self, **kwargs):
+    def displayConvLayers(self, **kwargs):
         """
-        输出各层的卷积核信息
+        可视化卷积层
         :param kwargs:
         :return:
         """
-        raise NotImplementedError('displayConv')
+        raise NotImplementedError('displayConvLayers')
 
     def displayConvWeights(self, **kwargs):
+        """
+        可视化卷积核
+        :param kwargs:
+        :return:
+        """
         raise NotImplementedError('displayConvWeights')
 
     def evaulateOnTest(self, **kwargs):
@@ -108,7 +113,12 @@ class TensorflowModelLoader(ModelLoader):
         # 计算准确率
         self.test_accuracy, self.test_equals = self.cnn.accuracy(self.logits, self.test_labels_input)
 
-    def displayConv(self, testDataGenerater):
+    def displayConvLayers(self, testDataGenerater):
+        """
+        可视化卷积层
+        :param testDataGenerater:
+        :return:
+        """
         # 选取数据
         for input_image, input_label in testDataGenerater.generate_augment_batch():  # 获取图片样本
             # 输出原图
@@ -122,10 +132,10 @@ class TensorflowModelLoader(ModelLoader):
 
             # 画出原图
             # 获取各个卷积层的信息
-            convs = self.cnn.getWeights()
+            convs = self.cnn.getConvList()
             for index, conv in enumerate(convs):
                 shape = conv.get_shape().as_list()  # 获取卷积层输出的张量维度
-                out_filter_shape = shape[-1]  # 设置最多显示的过滤器的输出的 channel 大小
+                out_filter_shape = shape[-1]  # 设置最多显示的过滤器的输出的 channel 大小. 这里不限制
                 conv_out = self._session.run(conv, feed_dict={self.test_images_input: input_image,
                                                               self.test_labels_input: input_label})  # 得到的实际的输出(维度为[BATCH_SIZE HEIGHT WIDTH CHANNEL])
                 conv_transpose = np.transpose(conv_out,
@@ -150,6 +160,81 @@ class TensorflowModelLoader(ModelLoader):
                         # ax2[row][col].set_title('Channel %d' % (row * grid_y + col))
                 fig2.suptitle(filter_title_prefix)
                 plt.show(block=False)
+            plt.pause(500)  # 等待 500 秒, 不让其自动退出
+            break
+
+    @staticmethod
+    def _deprocess_image(x):
+        x -= x.mean()
+        x /= (x.std() - 1e-5)
+        x *= 0.1
+        x += 0.5
+        x = np.clip(x, 0, 1)
+        x *= 255
+        x = np.clip(x, 0, 255).astype(np.uint8)
+        return x
+
+    def _compute_gradient_ascending(self, images_input, images_input_data, filter_out, filter_index, size=32):
+        import numpy as np
+        from keras import backend as K
+        filter_out = tf.convert_to_tensor(filter_out)
+        loss = tf.reduce_mean(filter_out[:, :, :, filter_index])
+        grads = tf.gradients(loss, images_input)[0]
+        grads /= (K.sqrt(K.mean(K.sqrt(grads))) + 1e-5)
+        iterate = K.function([images_input], [loss,grads])
+        # 图像
+        images_input_data = (np.random.random((1, size, size, 3)) - 0.5) * 20 + 128
+        step = 1
+        for i in range(40):
+            loss_value, grads_value = iterate([images_input_data])
+            images_input_data += grads_value * step
+        img = images_input_data[0]
+        return self._deprocess_image(img)
+
+    def displayConvWeights(self, testDataGenerater):
+        """
+        可视化卷积核
+        :param testDataGenerater:
+        :return:
+        """
+        # 选取数据
+        for input_image, input_label in testDataGenerater.generate_augment_batch():  # 获取图片样本
+            # 输出原图
+            fig1, ax1 = plt.subplots(nrows=1, ncols=1)
+            one_image = input_image[0]  # 减少维度
+            I = np.stack([one_image[:, :, 0], one_image[:, :, 1], one_image[:, :, 2]], axis=2)  # 拼成像素矩阵，元素是RGB分类值
+            ax1.imshow(I)
+            ax1.set_title('Image Input, Label=%s' % (testDataGenerater.label_names[np.argmax(input_label[0])]))
+            plt.show(block=False)
+
+            # 画出原图
+            # 获取各个卷积核的信息
+            filters = self.cnn.getWeights()
+            for index, filter in enumerate(filters):
+
+                # shape = filter.get_shape().as_list()  # 获取卷积层输出的张量维度 [ksize, ksize, in_channel, out_channel]
+                # out_filter_shape = shape[-1] if shape[-1] <= 16 else 16  # 设置最多显示的过滤器的输出的 channel 大小
+                # filter_out = self._session.run(filter, feed_dict={self.test_images_input: input_image, self.test_labels_input: input_label})  # 得到的实际的输出(维度为[BATCH_SIZE HEIGHT WIDTH CHANNEL])
+                print(filter)
+                plt.imshow(self._compute_gradient_ascending(self.test_images_input, input_image, filter, 0))
+                plt.show()
+                break
+                # filter_transpose = np.transpose(filter_out, [3, 0, 1, 2])  # 转置, [out_channel, ksize, ksize, in_channel]
+                # # 计算每行和每列多少的图像
+                # grid_y, grid_x = self._factorization(out_filter_shape)
+                # # 添加子图信息
+                # fig2, ax2 = plt.subplots(nrows=grid_x, ncols=grid_y, figsize=(shape[1], 1))
+                #
+                # # fig2.subplots_adjust(wspace=0.02, hspace=0.02)
+                # filter_title_prefix = '{name} {out_channel}x{in_cahnnel}x{ksize}x{ksize}'.format(ksize=shape[2], name=filter.name, out_channel='[Real:%d, Displayed: %d]' % (shape[-1], out_filter_shape), in_cahnnel=shape[1])
+                # for row in range(grid_x):
+                #     for col in range(grid_y):
+                #         ax2[row][col].imshow(filter_transpose[row * grid_y + col][0])  # 获取每个通道输出的图像， 选择的是第一张图片
+                #         # ax2[row][col].set_xticks([])
+                #         # ax2[row][col].set_yticks([])
+                #         # ax2[row][col].set_title('Channel %d' % (row * grid_y + col))
+                # fig2.suptitle(filter_title_prefix)
+                # plt.show(block=False)
             plt.pause(500)  # 等待 500 秒, 不让其自动退出
             break
 
