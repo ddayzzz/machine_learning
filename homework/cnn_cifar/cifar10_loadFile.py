@@ -85,7 +85,10 @@ class Cifar10DataGenerator(object):
         X = np.vstack([lists[x].X for x in range(packs)])  # 将每一批次的数据整合为一个数据集 X
         Y = np.hstack([lists[x].Y for x in range(packs)])  # 注意每个 Y 是一个列向量，要行连接
         # 数据处理
-        self.X = X / 255.  # 归一
+        X = X / 255.  # 归一
+        X_mean = np.mean(X, axis=0)
+        X -= X_mean
+        self.X = X
         self.Y = to_categorical(Y, 10)  # one-hot
         self.batch_size = next_batch_size
 
@@ -189,7 +192,7 @@ class Cifar10PreprocessedAugmentDataGenerator(Cifar10DataGenerator):
 if __name__ == '__main__':
 
     from matplotlib import pyplot as plt
-    bc = 5000
+    bc = 128
     aug = Cifar10TestDataGenerator(bc)
 
     for X, Y in aug.generate_augment_batch():

@@ -395,7 +395,7 @@ class NormalCNNNetwork(TensorflowNetwork):
         POOL_KERNEL_SIZE = self.pool_kernel_size
         POOL_STRIDES = self.pool_strides
         # Layer1
-        layer1 = self._add_signle_conv_bn_act(input=images, layerId=1, filter_in_channels=3, filter_out_channels=32,)
+        layer1 = self._add_signle_conv_bn_act(input=images, layerId=1, filter_in_channels=3, filter_out_channels=32)
         # Layer2
         layer2 = self._add_max_pool(
             input=self._add_signle_conv_bn_act(input=layer1, layerId=2, filter_in_channels=32, filter_out_channels=32),
@@ -443,13 +443,12 @@ class VGGNetwork(TensorflowNetwork):
     def _add_vgg_conv_bn_act_layer(self, input, id_conv, in_filter_channels, out_filter_channels, lastConv=False):
         convname = 'conv%d' % id_conv
         with tf.variable_scope(convname) as scope:
-            weights = self._create_or_get_variable(name='weights', shape=[3, 3, in_filter_channels, out_filter_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
+            weights = self._create_or_get_variable(name='weights', shape=[self.conv_filter_size, self.conv_filter_size, in_filter_channels, out_filter_channels], initializer=tf.uniform_unit_scaling_initializer())  # 共享权重
 
             conv = tf.nn.conv2d(input=input, filter=weights, strides=self.conv_filter_strides, padding='SAME', name=convname)
             if lastConv:
                 # 添加这个 block 的卷积核输出
                 tf.add_to_collection('convs', conv)  # 添加卷积层
-                tf.add_to_collection('weights', weights)  # 添加卷积核
                 if self.displayKernelOnTensorboard:
                     self._add_conv_output_image(scope=scope, kernel=weights, max_output_image=1)  # 默认显示一张图片
             to_activate = self._add_batch_normalization_for_tensor_input(conv, out_filter_channels)
@@ -692,7 +691,7 @@ class KerasResNetwork(KerasCNNNetwork):
                 out = self._add_resnet_layer(out, in_filler_channel, conv_first=False)
                 out = self._add_resnet_layer(out, out_filler_channel, kernel_size=1, conv_first=False)
                 if resNetBlock == 0:
-                    # 添加线性投影残差
+                    # 添加线性投影残差, 减少训练的参数数量
                     X = self._add_resnet_layer(X, filter_channels=out_filler_channel,
                                                kernel_size=1,
                                                strides=strides,
